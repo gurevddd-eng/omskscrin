@@ -314,6 +314,9 @@ export function KiosksPage() {
   const [exhibitId, setExhibitId] = useState("");
   const [installSoftware, setInstallSoftware] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
+  const [domainSuffix, setDomainSuffix] = useState("udhb.local");
+  const [testBusy, setTestBusy] = useState(false);
+  const [testHint, setTestHint] = useState("");
   const [error, setError] = useState("");
   const [probing, setProbing] = useState<string | null>(null);
   const [probingAll, setProbingAll] = useState(false);
@@ -340,6 +343,7 @@ export function KiosksPage() {
     setKiosks(k);
     setExhibits(e);
     setDeploy(d);
+    if (d.domainSuffix) setDomainSuffix(d.domainSuffix);
     setSelectedId((cur) => {
       const want = preferredId === undefined ? cur : preferredId;
       if (want && k.some((x) => x.id === want)) return want;
@@ -501,11 +505,44 @@ export function KiosksPage() {
     }
   }
 
+  async function onTestWinRm() {
+    const host = hostname.trim();
+    if (!host) {
+      setError("Укажите имя Windows-ПК");
+      return;
+    }
+    setTestBusy(true);
+    setError("");
+    setTestHint("");
+    try {
+      const res = await api<{
+        ok: boolean;
+        hostname: string;
+        message: string;
+        detail?: string;
+      }>("/api/kiosks/test-connection", {
+        method: "POST",
+        json: { hostname: host },
+      });
+      const text = res.detail ? `${res.message} — ${res.detail}` : res.message;
+      if (res.ok) {
+        setTestHint(`${text} · будет добавлен как ${res.hostname}`);
+        setHostname(res.hostname);
+      } else {
+        setError(text);
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Проверка WinRM не удалась");
+    } finally {
+      setTestBusy(false);
+    }
+  }
+
   async function onCreate(ev: FormEvent) {
     ev.preventDefault();
     try {
       if (installSoftware && deploy && !deploy.packageReady) {
-        setError("Сначала: pnpm pack:kiosk-deploy на Debian-сервере");
+        setError("Сначала на Debian: pnpm pack:kiosk-deploy");
         return;
       }
       const host = hostname.trim();
@@ -521,10 +558,11 @@ export function KiosksPage() {
       setHostname("");
       setName("");
       setExhibitId("");
+      setTestHint("");
       setShowAdd(false);
       await load();
       setSelectedId(created.id);
-      setOkHint(`Киоск ${host} добавлен`);
+      setOkHint(`Киоск ${created.hostname} добавлен${installSoftware ? " · установка по WinRM…" : ""}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Ошибка");
     }
@@ -841,18 +879,25 @@ export function KiosksPage() {
                   {showAdd ? "Скрыть форму" : "+ Добавить киоск"}
                 </button>
                 {showAdd ? (
-                  <Card title="Новый киоск">
+                  <Card title="Новый киоск (домен / WinRM)">
                     <form className="kx-add-form" onSubmit={onCreate}>
                       <label>
-                        Hostname Windows-ПК
+                        Имя Windows-ПК
                         <input
                           required
                           value={hostname}
-                          onChange={(e) => setHostname(e.target.value)}
-                          placeholder="itpc07"
+                          onChange={(e) => {
+                            setHostname(e.target.value);
+                            setTestHint("");
+                          }}
+                          placeholder={`itpc07 или itpc07.${domainSuffix}`}
                           autoComplete="off"
                         />
                       </label>
+                      <p className="cx-setting__hint" style={{ margin: 0 }}>
+                        Короткое имя дополнится до <code>*.{domainSuffix}</code>. Подключение с
+                        Debian по WinRM (без SSH на ПК). Учётку задайте в Настройки → Windows.
+                      </p>
                       <label>
                         Название в админке
                         <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Стелла · зал 1" />
@@ -874,11 +919,22 @@ export function KiosksPage() {
                           checked={installSoftware}
                           onChange={(e) => setInstallSoftware(e.target.checked)}
                         />
-                        Сразу установить софт
+                        Сразу установить софт по WinRM
                       </label>
-                      <button className="btn" disabled={installSoftware && !!deploy && !deploy.packageReady}>
-                        Добавить
-                      </button>
+                      {testHint ? <Alert tone="success">{testHint}</Alert> : null}
+                      <div className="kx-add-actions" style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
+                        <button
+                          type="button"
+                          className="btn secondary"
+                          disabled={testBusy || !hostname.trim()}
+                          onClick={() => void onTestWinRm()}
+                        >
+                          {testBusy ? "Проверка…" : "Проверить WinRM"}
+                        </button>
+                        <button className="btn" disabled={installSoftware && !!deploy && !deploy.packageReady}>
+                          Добавить
+                        </button>
+                      </div>
                     </form>
                   </Card>
                 ) : null}

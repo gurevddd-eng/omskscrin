@@ -13,10 +13,12 @@ import { registerAdsRoutes } from "./routes/ads.js";
 import { registerSettingsRoutes } from "./routes/settings.js";
 import { startKioskProbeLoop } from "./kioskProbe.js";
 import { loadNetworkRuntimeFromDb } from "./networkSettings.js";
+import { refreshDeployCredentialsFromDb } from "./deployCredentials.js";
 
 async function main() {
   await mkdir(config.mediaDir, { recursive: true });
   await loadNetworkRuntimeFromDb();
+  await refreshDeployCredentialsFromDb();
 
   const app = Fastify({
     logger: config.isProd ? { level: "info" } : true,

@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { config } from "./config.js";
+import { getEffectiveDeploy } from "./deployCredentials.js";
 import { deployCredentialsOk, getDeployRuntime } from "./remoteDeploy.js";
 export type DeployMeta = {
   softwareVersion: string;
@@ -143,6 +144,7 @@ export function getDeployStatusDetail(): DeployStatusDetail {
 
   const credsOk = deployCredentialsOk();
   const runtime = getDeployRuntime();
+  const deploy = getEffectiveDeploy();
   const transportReady =
     runtime.transport === "winrm" ? Boolean(runtime.powerShell) : runtime.sshClient;
 
@@ -154,7 +156,9 @@ export function getDeployStatusDetail(): DeployStatusDetail {
     deployCredentialsConfigured: credsOk,
     deployTransport: runtime.transport,
     deployRuntimeMessage: runtime.message,
-    components,    willInstall: [
+    domainSuffix: deploy.domainSuffix,
+    components,
+    willInstall: [
       "Агент Омскэкран (автозапуск при старте Windows)",
       "UI киоска на http://127.0.0.1:47820",
       "Portable Node.js (если есть в пакете)",
@@ -178,18 +182,18 @@ export function getDeployStatusDetail(): DeployStatusDetail {
       },
       {
         id: "creds",
-        label: "DEPLOY_USER + пароль или SSH-ключ",
+        label: "Доменная учётка (WinRM)",
         ok: credsOk,
-        hint: credsOk ? config.deployUser : "Учётная запись администратора на Windows-киосках",
+        hint: credsOk ? deploy.user : "Настройки → Windows: user@udhb.local + пароль",
       },
       {
         id: "transport",
-        label: `Транспорт деплоя (${runtime.transport})`,
+        label: `Транспорт (${runtime.transport})`,
         ok: transportReady,
         hint: transportReady
           ? runtime.message || undefined
           : runtime.transport === "winrm"
-            ? "На Debian: apt install powershell + PSWSMan, или DEPLOY_TRANSPORT=ssh"
+            ? "На Debian: установите PowerShell 7 (pwsh) и модуль PSWSMan"
             : "apt install openssh-client sshpass; на киосках — OpenSSH Server",
       },
       {

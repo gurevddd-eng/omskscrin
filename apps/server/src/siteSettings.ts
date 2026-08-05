@@ -14,6 +14,8 @@ export async function ensureSiteSettings() {
       corsOrigins: "",
       probeIntervalMs: 30000,
       probeTimeoutMs: 2500,
+      domainSuffix: "udhb.local",
+      deployTransport: "winrm",
     },
     update: {},
   });

@@ -4,6 +4,11 @@ import { z } from "zod";
 import { prisma } from "../prisma.js";
 import { authenticate, requireRoles } from "../auth.js";
 import { config } from "../config.js";
+import {
+  getEffectiveDeploy,
+  refreshDeployCredentialsFromDb,
+  toDeployDto,
+} from "../deployCredentials.js";
 import { ensureSiteSettings } from "../siteSettings.js";
 import {
   getEffectiveCorsOrigins,
@@ -25,6 +30,14 @@ const networkPutSchema = z.object({
   corsOrigins: z.string().max(4000).optional(),
   probeIntervalMs: z.number().int().min(5000).max(600000).optional(),
   probeTimeoutMs: z.number().int().min(500).max(60000).optional(),
+});
+
+const deployPutSchema = z.object({
+  deployUser: z.string().min(1).max(200),
+  /** Omit or null = keep existing password; empty string clears */
+  deployPassword: z.string().max(500).nullable().optional(),
+  domainSuffix: z.string().min(1).max(200),
+  deployTransport: z.enum(["auto", "ssh", "winrm"]),
 });
 
 function bumpVersion(current: string) {
@@ -141,5 +154,34 @@ export async function registerSettingsRoutes(app: FastifyInstance) {
     await prisma.siteSettings.update({ where: { id: "default" }, data });
     await loadNetworkRuntimeFromDb();
     return getSiteSettingsDto();
+  });
+
+  app.get("/api/settings/deploy", { preHandler: requireRoles("admin") }, async () => {
+    await refreshDeployCredentialsFromDb();
+    return toDeployDto(getEffectiveDeploy());
+  });
+
+  app.put("/api/settings/deploy", { preHandler: requireRoles("admin") }, async (request) => {
+    const body = deployPutSchema.parse(request.body);
+    const current = await ensureSiteSettings();
+    const data: {
+      deployUser: string;
+      deployPassword?: string | null;
+      domainSuffix: string;
+      deployTransport: string;
+    } = {
+      deployUser: body.deployUser.trim(),
+      domainSuffix: body.domainSuffix.trim().replace(/^\./, "") || "udhb.local",
+      deployTransport: body.deployTransport,
+    };
+    if (body.deployPassword !== undefined && body.deployPassword !== null) {
+      data.deployPassword = body.deployPassword;
+    } else {
+      // keep existing
+      data.deployPassword = current.deployPassword;
+    }
+    await prisma.siteSettings.update({ where: { id: "default" }, data });
+    const deploy = await refreshDeployCredentialsFromDb();
+    return toDeployDto(deploy);
   });
 }

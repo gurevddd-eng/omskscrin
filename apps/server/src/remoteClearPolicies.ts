@@ -1,7 +1,7 @@
 import type { PolicyClearStage, PolicyClearStatus } from "@stella/shared";
 import { POLICY_CLEAR_STAGE_LABEL } from "@stella/shared";
 import { prisma } from "./prisma.js";
-import { config } from "./config.js";
+import { getEffectiveDeploy } from "./deployCredentials.js";
 import { mapKiosk } from "./kioskProbe.js";
 import { broadcastKioskUpsert } from "./monitorHub.js";
 import {
@@ -114,7 +114,10 @@ async function runClearPoliciesJob(id: string) {
   const isLocal = isLocalKiosk(kiosk.hostname);
   const args = ["-Hostname", kiosk.hostname];
   if (isLocal) args.push("-LocalOnly");
-  else args.push("-DeployUser", config.deployUser, "-DeployPassword", config.deployPassword);
+  else {
+    const deploy = getEffectiveDeploy();
+    args.push("-DeployUser", deploy.user, "-DeployPassword", deploy.password);
+  }
 
   try {
     let lastStage: PolicyClearStage = "connecting";

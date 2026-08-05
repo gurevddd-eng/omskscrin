@@ -119,6 +119,13 @@ model SiteSettings {
   corsOrigins       String   @default("")
   probeIntervalMs   Int      @default(30000)
   probeTimeoutMs    Int      @default(2500)
+  /// Domain deploy account (overrides .env DEPLOY_* when set)
+  deployUser        String?
+  deployPassword    String?
+  /// Appended to short hostnames: pc01 → pc01.udhb.local
+  domainSuffix      String   @default("udhb.local")
+  /// auto | ssh | winrm — empty/null = use .env DEPLOY_TRANSPORT
+  deployTransport   String?
   updatedAt       DateTime @updatedAt
 }
 

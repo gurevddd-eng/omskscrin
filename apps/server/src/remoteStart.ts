@@ -1,7 +1,7 @@
 import type { UiStartStage, UiStartStatus } from "@stella/shared";
 import { UI_START_STAGE_LABEL } from "@stella/shared";
 import { prisma } from "./prisma.js";
-import { config } from "./config.js";
+import { getEffectiveDeploy } from "./deployCredentials.js";
 import { mapKiosk, probeKioskById } from "./kioskProbe.js";
 import { broadcastKioskUpsert } from "./monitorHub.js";
 import { getSiteNetworkSettings, resolveKioskNetwork } from "./networkSettings.js";
@@ -114,7 +114,10 @@ async function runStartUiJob(id: string) {
     String(net.healthPort),
   ];
   if (isLocal) args.push("-LocalOnly");
-  else args.push("-DeployUser", config.deployUser, "-DeployPassword", config.deployPassword);
+  else {
+    const deploy = getEffectiveDeploy();
+    args.push("-DeployUser", deploy.user, "-DeployPassword", deploy.password);
+  }
 
   try {
     let lastStage: UiStartStage = "connecting";

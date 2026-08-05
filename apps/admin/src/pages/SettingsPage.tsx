@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useState } from "react";
-import type { KioskDto, SiteSettingsDto } from "@stella/shared";
+import type { DeploySettingsDto, KioskDto, SiteSettingsDto } from "@stella/shared";
 import { useAuth } from "../auth";
 import { api } from "../api";
 import { PageShell } from "../components/ui/PageShell";
@@ -19,10 +19,10 @@ type SystemNetwork = {
   note: string;
 };
 
-type Tab = "behavior" | "network";
+type Tab = "behavior" | "network" | "windows";
 
 export function SettingsPage() {
-  const { canEdit } = useAuth();
+  const { canEdit, isAdmin } = useAuth();
   const [tab, setTab] = useState<Tab>("behavior");
   const [blockKeyboard, setBlockKeyboard] = useState(true);
   const [softwareEnabled, setSoftwareEnabled] = useState(true);
@@ -35,13 +35,36 @@ export function SettingsPage() {
   const [probeTimeoutMs, setProbeTimeoutMs] = useState(2500);
   const [effectiveServerUrl, setEffectiveServerUrl] = useState("");
   const [systemNetwork, setSystemNetwork] = useState<SystemNetwork | null>(null);
+  const [deployUser, setDeployUser] = useState("");
+  const [deployPassword, setDeployPassword] = useState("");
+  const [deployPasswordSet, setDeployPasswordSet] = useState(false);
+  const [domainSuffix, setDomainSuffix] = useState("udhb.local");
+  const [deployTransport, setDeployTransport] = useState<"auto" | "ssh" | "winrm">("winrm");
+  const [credentialsOk, setCredentialsOk] = useState(false);
+  const [deploySource, setDeploySource] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [networkBusy, setNetworkBusy] = useState(false);
+  const [deployBusy, setDeployBusy] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [networkDirty, setNetworkDirty] = useState(false);
+  const [deployDirty, setDeployDirty] = useState(false);
   const [savedHint, setSavedHint] = useState("");
   const [networkHint, setNetworkHint] = useState("");
+  const [deployHint, setDeployHint] = useState("");
+
+  async function loadDeploy() {
+    if (!isAdmin) return;
+    const d = await api<DeploySettingsDto>("/api/settings/deploy");
+    setDeployUser(d.deployUser);
+    setDeployPassword("");
+    setDeployPasswordSet(d.deployPasswordSet);
+    setDomainSuffix(d.domainSuffix || "udhb.local");
+    setDeployTransport(d.deployTransport === "ssh" || d.deployTransport === "auto" ? d.deployTransport : "winrm");
+    setCredentialsOk(d.credentialsOk);
+    setDeploySource(d.source);
+    setDeployDirty(false);
+  }
 
   async function load() {
     const [data, sys] = await Promise.all([
@@ -61,11 +84,12 @@ export function SettingsPage() {
     setSystemNetwork(sys);
     setDirty(false);
     setNetworkDirty(false);
+    await loadDeploy();
   }
 
   useEffect(() => {
     load().catch((e) => setError(e instanceof Error ? e.message : "Ошибка загрузки"));
-  }, []);
+  }, [isAdmin]);
 
   async function applyToAllKiosks(enabled: boolean) {
     const list = await api<KioskDto[]>("/api/kiosks");
@@ -144,16 +168,56 @@ export function SettingsPage() {
     }
   }
 
+  async function onSaveDeploy(e: FormEvent) {
+    e.preventDefault();
+    if (!isAdmin) return;
+    setDeployBusy(true);
+    setError("");
+    setDeployHint("");
+    try {
+      const json: Record<string, string> = {
+        deployUser: deployUser.trim(),
+        domainSuffix: domainSuffix.trim().replace(/^\./, "") || "udhb.local",
+        deployTransport,
+      };
+      if (deployPassword.trim()) {
+        json.deployPassword = deployPassword;
+      }
+      const saved = await api<DeploySettingsDto>("/api/settings/deploy", {
+        method: "PUT",
+        json,
+      });
+      setDeployUser(saved.deployUser);
+      setDeployPassword("");
+      setDeployPasswordSet(saved.deployPasswordSet);
+      setDomainSuffix(saved.domainSuffix);
+      setDeployTransport(saved.deployTransport);
+      setCredentialsOk(saved.credentialsOk);
+      setDeploySource(saved.source);
+      setDeployDirty(false);
+      setDeployHint(
+        saved.credentialsOk
+          ? "Сохранено. Debian подключается к ПК по WinRM (порт 5985)."
+          : "Сохранено, но учётка неполная — укажите пароль."
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Ошибка сохранения учётки");
+    } finally {
+      setDeployBusy(false);
+    }
+  }
+
   return (
     <PageShell
       section="Система"
       title="Настройки"
-      description="Глобальное поведение киосков и параметры сети Debian-сервера."
+      description="Поведение киосков, сеть Debian-сервера и доменная учётка для WinRM."
       banner={
         <>
           {error ? <Alert tone="error">{error}</Alert> : null}
           {savedHint ? <Alert tone="success">{savedHint}</Alert> : null}
           {networkHint ? <Alert tone="success">{networkHint}</Alert> : null}
+          {deployHint ? <Alert tone="success">{deployHint}</Alert> : null}
         </>
       }
     >
@@ -174,6 +238,16 @@ export function SettingsPage() {
         >
           Сеть и порты
         </button>
+        {isAdmin ? (
+          <button
+            type="button"
+            role="tab"
+            className={`cx-tab${tab === "windows" ? " is-active" : ""}`}
+            onClick={() => setTab("windows")}
+          >
+            Windows / домен
+          </button>
+        ) : null}
       </div>
 
       {tab === "behavior" ? (
@@ -238,7 +312,9 @@ export function SettingsPage() {
             </div>
           </form>
         </Card>
-      ) : (
+      ) : null}
+
+      {tab === "network" ? (
         <>
           {systemNetwork ? (
             <Card title="Runtime сервера" subtitle="Значения из .env и текущего процесса">
@@ -263,7 +339,7 @@ export function SettingsPage() {
                   </dd>
                 </div>
                 <div>
-                  <dt>Деплой на Windows</dt>
+                  <dt>WinRM на киосках</dt>
                   <dd>{systemNetwork.endpoints.winRm}</dd>
                 </div>
               </dl>
@@ -375,7 +451,99 @@ export function SettingsPage() {
             </form>
           </Card>
         </>
-      )}
+      ) : null}
+
+      {tab === "windows" && isAdmin ? (
+        <Card
+          title="Доменная учётка"
+          subtitle={
+            credentialsOk
+              ? `Готово · источник: ${deploySource}`
+              : "Нужна для установки и управления киосками с Debian"
+          }
+          actions={
+            <button type="submit" form="settings-deploy" className="btn" disabled={deployBusy || !deployDirty}>
+              {deployBusy ? "Сохранение…" : "Сохранить"}
+            </button>
+          }
+        >
+          <form id="settings-deploy" className="stack" onSubmit={onSaveDeploy}>
+            <p className="cx-setting__hint">
+              Сервер на Debian подключается к Windows по <strong>WinRM</strong> (TCP 5985) через{" "}
+              <code>pwsh</code> и модуль PSWSMan. OpenSSH на киосках не нужен. Учётка должна быть
+              локальным администратором на целевых ПК (или в группе Domain Admins / делегированных
+              прав).
+            </p>
+
+            <label>
+              Логин (предпочтительно UPN)
+              <input
+                value={deployUser}
+                placeholder="user@udhb.local"
+                autoComplete="off"
+                disabled={deployBusy}
+                onChange={(e) => {
+                  setDeployUser(e.target.value);
+                  setDeployDirty(true);
+                  setDeployHint("");
+                }}
+              />
+            </label>
+
+            <label>
+              Пароль
+              <input
+                type="password"
+                value={deployPassword}
+                placeholder={deployPasswordSet ? "•••••••• (оставьте пустым, чтобы не менять)" : "пароль доменной учётки"}
+                autoComplete="new-password"
+                disabled={deployBusy}
+                onChange={(e) => {
+                  setDeployPassword(e.target.value);
+                  setDeployDirty(true);
+                  setDeployHint("");
+                }}
+              />
+            </label>
+
+            <div className="cx-field-grid">
+              <label>
+                DNS-суффикс домена
+                <input
+                  value={domainSuffix}
+                  placeholder="udhb.local"
+                  disabled={deployBusy}
+                  onChange={(e) => {
+                    setDomainSuffix(e.target.value);
+                    setDeployDirty(true);
+                  }}
+                />
+              </label>
+              <label>
+                Транспорт
+                <select
+                  value={deployTransport}
+                  disabled={deployBusy}
+                  onChange={(e) => {
+                    setDeployTransport(e.target.value as "auto" | "ssh" | "winrm");
+                    setDeployDirty(true);
+                  }}
+                >
+                  <option value="winrm">WinRM (рекомендуется)</option>
+                  <option value="auto">Авто</option>
+                  <option value="ssh">SSH (только если на ПК есть OpenSSH)</option>
+                </select>
+              </label>
+            </div>
+
+            <p className="cx-setting__hint">
+              Короткое имя <code>itpc07</code> при добавлении киоска станет{" "}
+              <code>itpc07.{domainSuffix || "udhb.local"}</code>. На Debian должны быть установлены
+              PowerShell 7 и PSWSMan.
+            </p>
+          </form>
+        </Card>
+      ) : null}
     </PageShell>
   );
 }

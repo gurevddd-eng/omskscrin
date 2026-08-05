@@ -4,6 +4,7 @@ import path from "node:path";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { config } from "./config.js";
+import { deployCredentialsConfigured, getEffectiveDeploy } from "./deployCredentials.js";
 
 export type DeployScriptName =
   | "remote-install"
@@ -11,7 +12,8 @@ export type DeployScriptName =
   | "remote-stop"
   | "remote-uninstall"
   | "remote-clear-policies"
-  | "remote-push-config";
+  | "remote-push-config"
+  | "remote-test-connection";
 
 export type DeployTransportKind = "winrm" | "ssh";
 
@@ -79,7 +81,8 @@ export function resolveSshpass(): boolean {
 }
 
 export function resolveTransport(): DeployTransportKind {
-  const configured = config.deployTransport;
+  const fromDb = getEffectiveDeploy().transport;
+  const configured = fromDb !== "auto" ? fromDb : config.deployTransport;
   if (configured === "winrm" || configured === "ssh") return configured;
 
   // Debian/Linux server → Windows kiosks: WinRM via pwsh if available, else SSH
@@ -96,14 +99,14 @@ export function getDeployRuntime(): DeployRuntime {
   if (transport === "winrm") {
     if (!ps) {
       message =
-        "Установите PowerShell 7 (pwsh) и модуль PSWSMan на Debian, либо задайте DEPLOY_TRANSPORT=ssh и включите OpenSSH на киосках.";
+        "Установите PowerShell 7 (pwsh) и модуль PSWSMan на Debian-сервере для WinRM к Windows-киоскам.";
     } else if (process.platform !== "win32") {
-      message = "Удалённое управление Windows-киосками через WinRM (pwsh + PSWSMan).";
+      message = "Debian → Windows по WinRM (pwsh + PSWSMan, порт 5985).";
     }
   } else if (!ssh) {
     message = "Клиент ssh не найден. Установите openssh-client на сервере.";
-  } else if (!config.deployPassword && !config.deploySshKeyPath) {
-    message = "Для SSH задайте DEPLOY_PASSWORD (и sshpass) или DEPLOY_SSH_KEY_PATH.";
+  } else if (!getEffectiveDeploy().password && !getEffectiveDeploy().sshKeyPath) {
+    message = "Для SSH задайте доменную учётку в Настройки → Windows (или DEPLOY_* в .env).";
   } else {
     message = "Удалённое управление Windows-киосками через OpenSSH (scp + powershell на киоске).";
   }
@@ -111,7 +114,7 @@ export function getDeployRuntime(): DeployRuntime {
   return {
     platform: process.platform,
     transport,
-    transportConfigured: config.deployTransport,
+    transportConfigured: getEffectiveDeploy().transport,
     powerShell: ps,
     sshClient: ssh,
     sshpass: resolveSshpass(),
@@ -121,12 +124,7 @@ export function getDeployRuntime(): DeployRuntime {
 }
 
 export function deployCredentialsOk(): boolean {
-  return Boolean(
-    config.deployUser &&
-      !/^domain\\/i.test(config.deployUser) &&
-      config.deployUser.toLowerCase() !== "domain\\admin" &&
-      (config.deployPassword || config.deploySshKeyPath)
-  );
+  return deployCredentialsConfigured(getEffectiveDeploy());
 }
 
 export function isLocalKiosk(hostname: string): boolean {
@@ -264,12 +262,13 @@ export async function runDeployScript(
 
   // SSH transport: bash script, same -Param flags as PowerShell scripts
   const bash = resolveBinary(["bash", "/bin/bash", "sh"]) || "bash";
+  const deploy = getEffectiveDeploy();
   const env = {
     ...process.env,
-    DEPLOY_USER: config.deployUser,
-    DEPLOY_PASSWORD: config.deployPassword,
-    DEPLOY_SSH_PORT: String(config.deploySshPort),
-    DEPLOY_SSH_KEY_PATH: config.deploySshKeyPath,
+    DEPLOY_USER: deploy.user,
+    DEPLOY_PASSWORD: deploy.password,
+    DEPLOY_SSH_PORT: String(deploy.sshPort),
+    DEPLOY_SSH_KEY_PATH: deploy.sshKeyPath,
     DEPLOY_PACKAGE_DIR: config.deployPackageDir,
   };
   return new Promise((resolve) => {
@@ -322,13 +321,13 @@ export async function runDeployScript(
 export function deployTransportError(): string | null {
   const rt = getDeployRuntime();
   if (rt.transport === "winrm" && !rt.powerShell) {
-    return "На Debian-сервере нужен pwsh для WinRM или DEPLOY_TRANSPORT=ssh";
+    return "На Debian-сервере нужен PowerShell 7 (pwsh) и PSWSMan для WinRM";
   }
   if (rt.transport === "ssh" && !rt.sshClient) {
     return "Установите openssh-client на Debian-сервере";
   }
-  if (rt.transport === "ssh" && !deployCredentialsOk()) {
-    return "Задайте DEPLOY_USER и DEPLOY_PASSWORD (sshpass) или DEPLOY_SSH_KEY_PATH";
+  if (!deployCredentialsOk()) {
+    return "Задайте доменную учётку в Настройки → Windows (user@udhb.local + пароль)";
   }
   return null;
 }

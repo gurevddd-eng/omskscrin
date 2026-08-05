@@ -8,6 +8,7 @@ export type DeployStatus = {
   deployCredentialsConfigured: boolean;
   deployTransport?: string;
   deployRuntimeMessage?: string;
+  domainSuffix?: string;
   components: { id: string; label: string; ready: boolean; detail?: string }[];
   willInstall: string[];
   prerequisites: { id: string; label: string; ok: boolean; hint?: string }[];
@@ -69,7 +70,11 @@ export function DeployStatusPanel({ deploy }: { deploy: DeployStatus }) {
       {!deploy.packageReady ? (
         <p className="kx-deploy__hint">
           На Debian-сервере: <code>pnpm pack:kiosk-deploy</code>
-          {transport === "ssh" ? " · на киосках включите OpenSSH Server" : " · или задайте DEPLOY_TRANSPORT=ssh"}
+          {transport === "winrm"
+            ? " · WinRM :5985 на киосках, pwsh+PSWSMan на Debian"
+            : transport === "ssh"
+              ? " · на киосках нужен OpenSSH Server"
+              : " · для домена без SSH на ПК: транспорт WinRM"}
         </p>
       ) : null}
     </Card>

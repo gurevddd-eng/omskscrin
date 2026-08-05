@@ -1,5 +1,5 @@
 import { prisma } from "./prisma.js";
-import { config } from "./config.js";
+import { getEffectiveDeploy } from "./deployCredentials.js";
 import { mapKiosk, probeKioskById } from "./kioskProbe.js";
 import { buildKioskJsonConfig, getSiteNetworkSettings } from "./networkSettings.js";
 import {
@@ -57,7 +57,10 @@ export async function pushKioskConfig(id: string): Promise<{
       String(net.healthPort),
     ];
     if (isLocal) args.push("-LocalOnly");
-    else args.push("-DeployUser", config.deployUser, "-DeployPassword", config.deployPassword);
+  else {
+    const deploy = getEffectiveDeploy();
+    args.push("-DeployUser", deploy.user, "-DeployPassword", deploy.password);
+  }
 
     const result = await runDeployScript("remote-push-config", args, { timeoutMs: 120_000 });
     const text = `${result.stdout}\n${result.stderr}`.trim();

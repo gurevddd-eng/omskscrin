@@ -1,5 +1,5 @@
 import { prisma } from "./prisma.js";
-import { config } from "./config.js";
+import { getEffectiveDeploy } from "./deployCredentials.js";
 import { mapKiosk } from "./kioskProbe.js";
 import { getSiteNetworkSettings, resolveKioskNetwork } from "./networkSettings.js";
 import {
@@ -41,14 +41,15 @@ export async function uninstallKioskRuntime(id: string): Promise<{
   if (!kiosk) return { ok: false, message: "Not found", kiosk: null };
 
   const isLocal = isLocalKiosk(kiosk.hostname);
+  const deploy = getEffectiveDeploy();
   if (
     !isLocal &&
-    (!config.deployUser ||
-      (!config.deployPassword && !config.deploySshKeyPath) ||
-      /^domain\\/i.test(config.deployUser) ||
-      config.deployUser.toLowerCase() === "domain\\admin")
+    (!deploy.user ||
+      (!deploy.password && !deploy.sshKeyPath) ||
+      /^domain\\/i.test(deploy.user) ||
+      deploy.user.toLowerCase() === "domain\\admin")
   ) {
-    return { ok: false, message: "Задайте DEPLOY_USER / DEPLOY_PASSWORD в .env", kiosk: mapKiosk(kiosk) };
+    return { ok: false, message: "Задайте доменную учётку в Настройки → Windows", kiosk: mapKiosk(kiosk) };
   }
 
   running.add(id);
@@ -64,7 +65,7 @@ export async function uninstallKioskRuntime(id: string): Promise<{
       String(net.healthPort),
     ];
     if (isLocal) args.push("-LocalOnly");
-    else args.push("-DeployUser", config.deployUser, "-DeployPassword", config.deployPassword);
+    else args.push("-DeployUser", deploy.user, "-DeployPassword", deploy.password);
 
     const result = await runDeployScript("remote-uninstall", args, { timeoutMs: 180_000 });
     const text = `${result.stdout}\n${result.stderr}`.trim();

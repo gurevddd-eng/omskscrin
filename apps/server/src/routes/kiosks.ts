@@ -16,6 +16,8 @@ import {
   normalizeHostname,
   probeKioskById,
 } from "../kioskProbe.js";
+import { expandHostname, getEffectiveDeploy, refreshDeployCredentialsFromDb } from "../deployCredentials.js";
+import { testWindowsHostConnection } from "../deployTest.js";
 import { parseSpecs } from "./exhibits.js";
 import { getGlobalAdsState, syncFingerprint } from "./ads.js";
 import { ensureSiteSettings } from "../siteSettings.js";
@@ -30,6 +32,10 @@ import { prepareKioskDeletion } from "../kioskDeletion.js";
 import { uninstallKioskRuntime } from "../remoteUninstall.js";
 import { pushKioskConfig } from "../remotePushConfig.js";
 import { getDeployMeta, getDeployStatusDetail } from "../deployMeta.js";
+
+function resolveKioskHostname(raw: string) {
+  return expandHostname(normalizeHostname(raw), getEffectiveDeploy().domainSuffix);
+}
 
 function bumpSettingsVersion(current: string) {
   const n = Number(current);
@@ -112,6 +118,16 @@ export async function registerKioskRoutes(app: FastifyInstance) {
   });
 
   app.get("/api/kiosks/deploy/status", { preHandler: authenticate }, async () => getDeployStatusDetail());
+
+  app.post(
+    "/api/kiosks/test-connection",
+    { preHandler: requireRoles("admin", "editor") },
+    async (request) => {
+      const body = z.object({ hostname: z.string().min(1) }).parse(request.body);
+      await refreshDeployCredentialsFromDb();
+      return testWindowsHostConnection(body.hostname);
+    }
+  );
 
   /** Wipe Stella from all kiosk PCs (tasks, folder, keyboard policies) and reset global lockdown settings. */
   app.post(
@@ -210,7 +226,8 @@ export async function registerKioskRoutes(app: FastifyInstance) {
 
   app.post("/api/kiosks", { preHandler: requireRoles("admin", "editor") }, async (request, reply) => {
     const body = kioskSchema.parse(request.body);
-    const hostname = normalizeHostname(body.hostname);
+    await refreshDeployCredentialsFromDb();
+    const hostname = resolveKioskHostname(body.hostname);
     if (!hostname) return reply.code(400).send({ error: "hostname required" });
 
     try {
@@ -257,7 +274,8 @@ export async function registerKioskRoutes(app: FastifyInstance) {
         exhibitId?: string | null;
       } = {};
       if (body.hostname) {
-        const hostname = normalizeHostname(body.hostname);
+        await refreshDeployCredentialsFromDb();
+        const hostname = resolveKioskHostname(body.hostname);
         data.hostname = hostname;
         data.kioskId = hostname;
       }

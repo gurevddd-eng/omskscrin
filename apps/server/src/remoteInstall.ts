@@ -5,6 +5,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { prisma } from "./prisma.js";
 import { config } from "./config.js";
+import { getEffectiveDeploy } from "./deployCredentials.js";
 import { mapKiosk } from "./kioskProbe.js";
 import { broadcastKioskUpsert } from "./monitorHub.js";
 import { getSiteNetworkSettings, resolveKioskNetwork } from "./networkSettings.js";
@@ -127,18 +128,19 @@ export async function startKioskInstall(id: string) {
 
   const isLocal = isLocalKiosk(kiosk.hostname);
 
+  const deploy = getEffectiveDeploy();
   if (
     !isLocal &&
-    (!config.deployUser ||
-      (!config.deployPassword && !config.deploySshKeyPath) ||
-      /^domain\\/i.test(config.deployUser) ||
-      config.deployUser.toLowerCase() === "domain\\admin")
+    (!deploy.user ||
+      (!deploy.password && !deploy.sshKeyPath) ||
+      /^domain\\/i.test(deploy.user) ||
+      deploy.user.toLowerCase() === "domain\\admin")
   ) {
     return setInstall(
       id,
       "error",
       "error",
-      "Set DEPLOY_USER / DEPLOY_PASSWORD (or DEPLOY_SSH_KEY_PATH) in .env"
+      "Задайте доменную учётку в Настройки → Windows (или DEPLOY_USER / DEPLOY_PASSWORD в .env)"
     );
   }
 
@@ -174,8 +176,8 @@ export async function startKioskInstall(id: string) {
   ];
   if (isLocal) {
     args.push("-LocalOnly");
-  } else if (config.deployUser && config.deployPassword) {
-    args.push("-DeployUser", config.deployUser, "-DeployPassword", config.deployPassword);
+  } else if (deploy.user && deploy.password) {
+    args.push("-DeployUser", deploy.user, "-DeployPassword", deploy.password);
   }
 
   try {

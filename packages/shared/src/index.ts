@@ -332,6 +332,17 @@ export interface SiteSettingsDto {
   network: SiteNetworkDto;
 }
 
+/** Domain deploy account for WinRM from Debian → Windows kiosks */
+export interface DeploySettingsDto {
+  deployUser: string;
+  deployPasswordSet: boolean;
+  domainSuffix: string;
+  deployTransport: "auto" | "ssh" | "winrm";
+  sshKeyConfigured: boolean;
+  credentialsOk: boolean;
+  source: "db" | "env" | "mixed";
+}
+
 export interface AdsDto {
   adIds: string[];
   ads: FileDto[];
