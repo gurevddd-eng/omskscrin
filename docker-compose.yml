@@ -1,0 +1,40 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: stella
+      POSTGRES_PASSWORD: stella
+      POSTGRES_DB: stella
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U stella -d stella"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/server/Dockerfile
+    environment:
+      DATABASE_URL: postgresql://stella:stella@postgres:5432/stella
+      JWT_SECRET: change-me-in-production
+      ADMIN_LOGIN: admin
+      ADMIN_PASSWORD: admin123
+      MEDIA_DIR: /app/data/media
+      PORT: "8080"
+      HOST: "0.0.0.0"
+      CORS_ORIGIN: "*"
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data/media:/app/data/media
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:

@@ -1,0 +1,342 @@
+export const ROLES = ["admin", "editor", "viewer"] as const;
+export type Role = (typeof ROLES)[number];
+
+export type SyncStatus = "ok" | "error" | "unknown";
+export type ProbeStatus =
+  | "unknown"
+  | "healthy"
+  | "degraded"
+  | "no_software"
+  | "unreachable";
+
+export type InstallStatus = "idle" | "queued" | "running" | "ok" | "error";
+
+export type InstallStage =
+  | "idle"
+  | "queued"
+  | "connecting"
+  | "copying"
+  | "configuring"
+  | "installing"
+  | "starting"
+  | "done"
+  | "error";
+
+export const PROBE_STATUS_LABEL: Record<ProbeStatus, string> = {
+  unknown: "не проверен",
+  healthy: "в норме",
+  degraded: "частично",
+  no_software: "нет софта",
+  unreachable: "недоступен",
+};
+
+export const INSTALL_STATUS_LABEL: Record<InstallStatus, string> = {
+  idle: "не ставился",
+  queued: "в очереди",
+  running: "устанавливается",
+  ok: "установлен",
+  error: "ошибка установки",
+};
+
+/** Ordered pipeline steps shown in admin during install */
+export const INSTALL_STAGE_STEPS: { id: InstallStage; label: string }[] = [
+  { id: "queued", label: "В очереди" },
+  { id: "connecting", label: "Подключение" },
+  { id: "copying", label: "Копирование" },
+  { id: "configuring", label: "Конфиг" },
+  { id: "installing", label: "Службы" },
+  { id: "starting", label: "Запуск" },
+  { id: "done", label: "Готово" },
+];
+
+export const INSTALL_STAGE_LABEL: Record<InstallStage, string> = {
+  idle: "—",
+  queued: "В очереди",
+  connecting: "Подключение по WinRM",
+  copying: "Копирование файлов",
+  configuring: "Запись kiosk.json",
+  installing: "Настройка задач Windows",
+  starting: "Запуск агента и UI",
+  done: "Установка завершена",
+  error: "Ошибка",
+};
+
+export type PolicyClearStatus = "idle" | "running" | "ok" | "error";
+
+export type PolicyClearStage = "idle" | "connecting" | "clearing" | "done" | "error";
+
+export const POLICY_CLEAR_STATUS_LABEL: Record<PolicyClearStatus, string> = {
+  idle: "—",
+  running: "снятие политик",
+  ok: "политики сняты",
+  error: "ошибка",
+};
+
+export const POLICY_CLEAR_STAGE_STEPS: { id: PolicyClearStage; label: string }[] = [
+  { id: "connecting", label: "Подключение" },
+  { id: "clearing", label: "Снятие политик" },
+  { id: "done", label: "Готово" },
+];
+
+export const POLICY_CLEAR_STAGE_LABEL: Record<PolicyClearStage, string> = {
+  idle: "—",
+  connecting: "Подключение к Windows-ПК",
+  clearing: "Снятие политик lockdown",
+  done: "Политики сняты",
+  error: "Ошибка",
+};
+
+export type UiStartStatus = "idle" | "running" | "ok" | "error";
+
+export type UiStartStage = "idle" | "connecting" | "starting" | "done" | "error";
+
+export const UI_START_STATUS_LABEL: Record<UiStartStatus, string> = {
+  idle: "—",
+  running: "запуск UI",
+  ok: "UI запущен",
+  error: "ошибка",
+};
+
+export const UI_START_STAGE_STEPS: { id: UiStartStage; label: string }[] = [
+  { id: "connecting", label: "Подключение" },
+  { id: "starting", label: "Агент и Edge" },
+  { id: "done", label: "Готово" },
+];
+
+export const UI_START_STAGE_LABEL: Record<UiStartStage, string> = {
+  idle: "—",
+  connecting: "Подключение к Windows-ПК",
+  starting: "Запуск агента и Edge UI",
+  done: "Киоск запущен",
+  error: "Ошибка",
+};
+
+export type UiStopStatus = "idle" | "running" | "ok" | "error";
+
+export type UiStopStage = "idle" | "connecting" | "stopping" | "done" | "error";
+
+export const UI_STOP_STATUS_LABEL: Record<UiStopStatus, string> = {
+  idle: "—",
+  running: "остановка",
+  ok: "UI остановлен",
+  error: "ошибка",
+};
+
+export const UI_STOP_STAGE_STEPS: { id: UiStopStage; label: string }[] = [
+  { id: "connecting", label: "Подключение" },
+  { id: "stopping", label: "Агент и Edge" },
+  { id: "done", label: "Готово" },
+];
+
+export const UI_STOP_STAGE_LABEL: Record<UiStopStage, string> = {
+  idle: "—",
+  connecting: "Подключение к Windows-ПК",
+  stopping: "Остановка агента и Edge UI",
+  done: "Софт на киоске выключен",
+  error: "Ошибка",
+};
+
+export interface LoginRequest {
+  login: string;
+  password: string;
+}
+
+export interface AuthUser {
+  id: string;
+  login: string;
+  role: Role;
+  active: boolean;
+  superAdmin: boolean;
+}
+
+export interface LoginResponse {
+  token: string;
+  user: AuthUser;
+}
+
+export interface SpecRow {
+  label: string;
+  value: string;
+}
+
+/** Разбор текста в строки таблицы: одна строка = один параметр. */
+export function parseSpecsText(text: string): SpecRow[] {
+  const lines = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
+  const rows: SpecRow[] = [];
+
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line) continue;
+
+    if (line.includes("\t")) {
+      const [label, ...rest] = line.split("\t");
+      rows.push({ label: label.trim(), value: rest.join("\t").trim() });
+      continue;
+    }
+
+    const match = line.match(/^(.+?)\s*(?:—|–|:|：|\||-)\s+(.+)$/);
+    if (match) {
+      rows.push({ label: match[1].trim(), value: match[2].trim() });
+      continue;
+    }
+
+    rows.push({ label: line, value: "" });
+  }
+
+  return rows;
+}
+
+export function formatSpecsText(specs: SpecRow[]): string {
+  return specs
+    .filter((r) => r.label.trim() || r.value.trim())
+    .map((r) => (r.value.trim() ? `${r.label.trim()} — ${r.value.trim()}` : r.label.trim()))
+    .join("\n");
+}
+
+export interface ExhibitDto {
+  id: string;
+  title: string;
+  summary: string;
+  body: string;
+  specs: SpecRow[];
+  heroImageId: string | null;
+  galleryIds: string[];
+  videoId: string | null;
+  audioId: string | null;
+  contentVersion: string;
+  updatedAt: string;
+}
+
+export interface FileDto {
+  id: string;
+  filename: string;
+  mimeType: string;
+  size: number;
+  url: string;
+}
+
+export interface KioskDto {
+  id: string;
+  kioskId: string;
+  hostname: string;
+  name: string;
+  healthPort: number;
+  uiPort: number;
+  serverUrl: string | null;
+  exhibitId: string | null;
+  exhibitTitle?: string | null;
+  lastSeenAt: string | null;
+  online: boolean;
+  contentVersion: string | null;
+  syncStatus: SyncStatus;
+  syncMessage: string | null;
+  appVersion: string | null;
+  probeStatus: ProbeStatus;
+  probeMessage: string | null;
+  lastProbeAt: string | null;
+  installStatus: InstallStatus;
+  installStage: InstallStage;
+  installMessage: string | null;
+  lastInstallAt: string | null;
+  policyClearStatus: PolicyClearStatus;
+  policyClearStage: PolicyClearStage;
+  policyClearMessage: string | null;
+  uiStartStatus: UiStartStatus;
+  uiStartStage: UiStartStage;
+  uiStartMessage: string | null;
+  uiStopStatus: UiStopStatus;
+  uiStopStage: UiStopStage;
+  uiStopMessage: string | null;
+}
+
+export interface HeartbeatRequest {
+  contentVersion?: string | null;
+  syncStatus?: SyncStatus;
+  syncMessage?: string | null;
+  appVersion?: string | null;
+  hostname?: string;
+}
+
+export interface ManifestFile {
+  id: string;
+  filename: string;
+  mimeType: string;
+  size: number;
+  hash: string;
+  url: string;
+}
+
+export interface KioskManifest {
+  kioskId: string;
+  hostname?: string;
+  exhibit: {
+    id: string;
+    title: string;
+    summary: string;
+    body: string;
+    specs: SpecRow[];
+    heroImageId: string | null;
+    galleryIds: string[];
+    videoId: string | null;
+    audioId: string | null;
+    contentVersion: string;
+    updatedAt: string;
+  } | null;
+  /** Global ads for all kiosks */
+  adIds: string[];
+  adsVersion: string;
+  /** Visitor keyboard blocked on kiosk UI */
+  blockKeyboard: boolean;
+  /** When false, kiosk software stays fully off (persists across reboot) */
+  softwareEnabled: boolean;
+  settingsVersion: string;
+  files: ManifestFile[];
+  contentVersion: string | null;
+  serverTime: string;
+}
+
+/** Lightweight poll: content + software versions without full manifest/media */
+export interface KioskUpdates {
+  kioskId: string;
+  contentVersion: string | null;
+  adsVersion: string;
+  settingsVersion: string;
+  blockKeyboard: boolean;
+  softwareEnabled: boolean;
+  /** Combined fingerprint: contentVersion|adsVersion|settingsVersion */
+  syncFingerprint: string;
+  softwareVersion: string;
+  appVersion: string;
+  updateAvailable: boolean;
+  packageUrl: string;
+  serverTime: string;
+}
+
+export interface SiteNetworkDto {
+  serverPublicUrl: string;
+  effectiveServerPublicUrl: string;
+  defaultHealthPort: number;
+  defaultUiPort: number;
+  corsOrigins: string;
+  effectiveCorsOrigins: string[];
+  probeIntervalMs: number;
+  probeTimeoutMs: number;
+}
+
+export interface SiteSettingsDto {
+  blockKeyboard: boolean;
+  softwareEnabled: boolean;
+  settingsVersion: string;
+  adsVersion: string;
+  updatedAt: string;
+  network: SiteNetworkDto;
+}
+
+export interface AdsDto {
+  adIds: string[];
+  ads: FileDto[];
+  adsVersion: string;
+  updatedAt: string;
+}
+
+export const ONLINE_THRESHOLD_MS = 2 * 60 * 1000;

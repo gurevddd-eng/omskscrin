@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="Омскэкран">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#152636"/>
+      <stop offset="100%" stop-color="#0f1a24"/>
+    </linearGradient>
+  </defs>
+  <rect width="32" height="32" rx="7" fill="url(#bg)"/>
+  <circle cx="24" cy="8" r="2.1" fill="#3f6f7c"/>
+  <path
+    fill="#e8eef3"
+    fill-rule="evenodd"
+    d="M16 9.2c4.75 0 8.05 3.05 8.05 7.3S20.75 23.8 16 23.8 7.95 20.75 7.95 16.5 11.25 9.2 16 9.2Zm0 2.35c-3.05 0-5.15 1.95-5.15 4.95s2.1 4.95 5.15 4.95 5.15-1.95 5.15-4.95-2.1-4.95-5.15-4.95Z"
+  />
+  <path fill="#3f6f7c" d="M16 24.5 13.2 19h5.6L16 24.5Zm0 2.8 3.8-5.5h-7.6l3.8 5.5Z"/>
+</svg>

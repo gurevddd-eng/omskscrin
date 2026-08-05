@@ -1,0 +1,3 @@
+-- AlterTable
+ALTER TABLE "SiteSettings" ADD COLUMN IF NOT EXISTS "settingsVersion" TEXT NOT NULL DEFAULT '1';
+ALTER TABLE "SiteSettings" ADD COLUMN IF NOT EXISTS "blockKeyboard" BOOLEAN NOT NULL DEFAULT true;

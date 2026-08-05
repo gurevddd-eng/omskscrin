@@ -1,0 +1,17 @@
+node_modules
+dist
+dist-ssr
+*.local
+.env
+.env.local
+data/
+uploads/
+*.log
+.DS_Store
+apps/kiosk/src-tauri/target
+apps/server/prisma/*.db
+apps/server/prisma/*.db-journal
+.turbo
+coverage
+tools/node/
+*.tsbuildinfo

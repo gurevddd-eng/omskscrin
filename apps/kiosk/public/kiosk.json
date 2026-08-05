@@ -1,0 +1,10 @@
+{
+  "kioskId": "peleng",
+  "hostname": "peleng",
+  "serverUrl": "http://localhost:8080",
+  "syncIntervalSec": 20,
+  "idleTimeoutSec": 60,
+  "heartbeatIntervalSec": 30,
+  "healthPort": 47821,
+  "appVersion": "0.1.0"
+}

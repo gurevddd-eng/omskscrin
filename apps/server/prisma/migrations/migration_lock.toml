@@ -1,0 +1,4 @@
+# This file should contain a list of migrations to apply
+# See https://pris.ly/d/migrate-lock
+
+provider = "postgresql"

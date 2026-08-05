@@ -1,0 +1,26 @@
+{
+  "name": "stella-udhb",
+  "private": true,
+  "scripts": {
+    "dev:server": "pnpm --filter @stella/server dev",
+    "dev:admin": "pnpm --filter @stella/admin dev",
+    "dev:kiosk": "pnpm --filter @stella/kiosk dev",
+    "dev:kiosk-health": "pnpm --filter @stella/kiosk health",
+    "build": "pnpm -r build",
+    "build:prod": "pnpm --filter @stella/shared build && pnpm --filter @stella/admin build && pnpm --filter @stella/server build",
+    "pack:kiosk-deploy": "node scripts/pack-kiosk-deploy.mjs",
+    "start": "pnpm --filter @stella/server start",
+    "start:prod": "pnpm --filter @stella/server start:prod",
+    "db:generate": "pnpm --filter @stella/server prisma:generate",
+    "db:migrate": "pnpm --filter @stella/server exec prisma migrate deploy",
+    "db:seed": "pnpm --filter @stella/server prisma:seed"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "pnpm@9.15.0",
+  "prisma": {
+    "schema": "apps/server/prisma/schema.prisma",
+    "seed": "pnpm --filter @stella/server prisma:seed"
+  }
+}

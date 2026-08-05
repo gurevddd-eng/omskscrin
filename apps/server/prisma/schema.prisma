@@ -1,0 +1,151 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  admin
+  editor
+  viewer
+}
+
+enum SyncStatus {
+  ok
+  error
+  unknown
+}
+
+enum ProbeStatus {
+  unknown
+  healthy
+  degraded
+  no_software
+  unreachable
+}
+
+enum InstallStatus {
+  idle
+  queued
+  running
+  ok
+  error
+}
+
+model User {
+  id           String   @id @default(cuid())
+  login        String   @unique
+  passwordHash String
+  role         Role     @default(editor)
+  /// Root account: can reset passwords of other users
+  superAdmin   Boolean  @default(false)
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model MediaFile {
+  id           String   @id @default(cuid())
+  filename     String
+  storedName   String
+  mimeType     String
+  size         Int
+  hash         String
+  createdAt    DateTime @default(now())
+
+  heroOf       Exhibit[] @relation("HeroImage")
+  videoOf      Exhibit[] @relation("Video")
+  audioOf      Exhibit[] @relation("Audio")
+  galleryLinks ExhibitGallery[]
+  globalAds    GlobalAd[]
+}
+
+model Exhibit {
+  id             String   @id @default(cuid())
+  title          String
+  summary        String   @default("")
+  body           String   @default("")
+  /// ТТХ / характеристики: [{ label, value }, ...]
+  specs          Json     @default("[]")
+  heroImageId    String?
+  videoId        String?
+  audioId        String?
+  contentVersion String   @default("1")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  heroImage MediaFile? @relation("HeroImage", fields: [heroImageId], references: [id])
+  video     MediaFile? @relation("Video", fields: [videoId], references: [id])
+  audio     MediaFile? @relation("Audio", fields: [audioId], references: [id])
+  gallery   ExhibitGallery[]
+  kiosks    Kiosk[]
+}
+
+model ExhibitGallery {
+  exhibitId String
+  fileId    String
+  sortOrder Int    @default(0)
+
+  exhibit Exhibit   @relation(fields: [exhibitId], references: [id], onDelete: Cascade)
+  file    MediaFile @relation(fields: [fileId], references: [id], onDelete: Cascade)
+
+  @@id([exhibitId, fileId])
+}
+
+/// Global rotating ads shown on every kiosk
+model GlobalAd {
+  fileId    String @id
+  sortOrder Int    @default(0)
+
+  file MediaFile @relation(fields: [fileId], references: [id], onDelete: Cascade)
+}
+
+model SiteSettings {
+  id              String   @id @default("default")
+  adsVersion      String   @default("1")
+  settingsVersion String   @default("1")
+  /// Block visitor keyboard on kiosks (synced via manifest)
+  blockKeyboard   Boolean  @default(true)
+  /// When false, kiosk UI/agent stay off even after reboot until enabled again
+  softwareEnabled Boolean  @default(true)
+  /// Override SERVER_PUBLIC_URL from .env (null = use env)
+  serverPublicUrl String?
+  defaultHealthPort Int    @default(47821)
+  defaultUiPort     Int    @default(47820)
+  /// Comma-separated CORS origins (empty = use .env)
+  corsOrigins       String   @default("")
+  probeIntervalMs   Int      @default(30000)
+  probeTimeoutMs    Int      @default(2500)
+  updatedAt       DateTime @updatedAt
+}
+
+model Kiosk {
+  id             String      @id @default(cuid())
+  kioskId        String      @unique
+  hostname       String      @unique
+  name           String
+  healthPort     Int         @default(47821)
+  uiPort         Int         @default(47820)
+  /// Override site server URL (null = inherit)
+  serverUrl      String?
+  exhibitId      String?
+  lastSeenAt     DateTime?
+  contentVersion String?
+  syncStatus     SyncStatus  @default(unknown)
+  syncMessage    String?
+  appVersion     String?
+  probeStatus    ProbeStatus   @default(unknown)
+  probeMessage   String?
+  lastProbeAt    DateTime?
+  installStatus  InstallStatus @default(idle)
+  installStage   String        @default("idle")
+  installMessage String?
+  lastInstallAt  DateTime?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  exhibit Exhibit? @relation(fields: [exhibitId], references: [id])
+}

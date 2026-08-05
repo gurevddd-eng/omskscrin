@@ -1,0 +1,15 @@
+{
+  "hostname": "PATRIOTSTELA1",
+  "kioskId": "patriotstela1",
+  "serverUrl": "http://192.168.1.10:8080",
+  "healthPort": 47821,
+  "syncIntervalSec": 300,
+  "idleTimeoutSec": 60,
+  "heartbeatIntervalSec": 30,
+  "appVersion": "0.1.0",
+  "game": {
+    "title": "Играть",
+    "exe": "demo/game.exe",
+    "args": []
+  }
+}
