@@ -85,7 +85,10 @@ $stopBlock = {
 }
 
 $Hostname = $Hostname.Trim()
-$localName = $env:COMPUTERNAME.ToLower()
+$cn = $env:COMPUTERNAME
+if (-not $cn) { $cn = $env:HOSTNAME }
+if (-not $cn) { $cn = [System.Net.Dns]::GetHostName() }
+$localName = $cn.ToLower()
 $isLocal = $LocalOnly -or ($Hostname.ToLower() -eq $localName) -or ($Hostname -eq "localhost") -or ($Hostname -eq "127.0.0.1")
 
 if ($isLocal) {
@@ -108,9 +111,13 @@ if ($DeployUser -and $DeployPassword) {
 $sessionParams = @{
   ComputerName  = $Hostname
   ErrorAction   = "Stop"
-  SessionOption = (New-PSSessionOption -OperationTimeout 0 -OpenTimeout 60000)
 }
 if ($cred) { $sessionParams.Credential = $cred }
+if ($IsWindows) {
+  $sessionParams.SessionOption = (New-PSSessionOption -OperationTimeout 0 -OpenTimeout 60000)
+} else {
+  $sessionParams.Authentication = "Negotiate"
+}
 
 Write-Stage "connecting"
 Write-Host "Connecting via WinRM to $Hostname ..."

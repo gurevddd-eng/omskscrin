@@ -22,10 +22,14 @@ $sec = ConvertTo-SecureString $DeployPassword -AsPlainText -Force
 $cred = New-Object System.Management.Automation.PSCredential ($DeployUser, $sec)
 
 $sessionParams = @{
-  ComputerName  = $Hostname
-  Credential    = $cred
-  ErrorAction   = "Stop"
-  SessionOption = (New-PSSessionOption -OperationTimeout 0 -OpenTimeout 20000)
+  ComputerName = $Hostname
+  Credential   = $cred
+  ErrorAction  = "Stop"
+}
+if ($IsWindows) {
+  $sessionParams.SessionOption = (New-PSSessionOption -OperationTimeout 0 -OpenTimeout 20000)
+} else {
+  $sessionParams.Authentication = "Negotiate"
 }
 
 Write-Host "Connecting via WinRM to $Hostname as $DeployUser ..."

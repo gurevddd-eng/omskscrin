@@ -101,7 +101,10 @@ function Install-ToRoot([string]$TargetRoot) {
   return $text
 }
 
-$localName = $env:COMPUTERNAME.ToLower()
+$cn = $env:COMPUTERNAME
+if (-not $cn) { $cn = $env:HOSTNAME }
+if (-not $cn) { $cn = [System.Net.Dns]::GetHostName() }
+$localName = $cn.ToLower()
 $isLocal = $LocalOnly -or ($Hostname.ToLower() -eq $localName) -or ($Hostname -eq "localhost") -or ($Hostname -eq "127.0.0.1")
 
 if ($isLocal) {
@@ -127,9 +130,14 @@ if ($DeployUser -and $DeployPassword) {
 $sessionParams = @{
   ComputerName   = $Hostname
   ErrorAction    = "Stop"
-  SessionOption  = (New-PSSessionOption -OperationTimeout 0 -IdleTimeout 600000 -OpenTimeout 120000)
 }
 if ($cred) { $sessionParams.Credential = $cred }
+# PSWSMan on Linux/macOS: New-PSSessionOption lacks OpenTimeout/OperationTimeout/IdleTimeout
+if ($IsWindows) {
+  $sessionParams.SessionOption = (New-PSSessionOption -OperationTimeout 0 -IdleTimeout 600000 -OpenTimeout 120000)
+} else {
+  $sessionParams.Authentication = "Negotiate"
+}
 
 Write-Stage "connecting"
 Write-Host "Connecting via WinRM to $Hostname as $DeployUser ..."
@@ -153,7 +161,8 @@ try {
   } -ArgumentList $remoteRoot
 
   Write-Stage "copying"
-  $remoteZip = Join-Path $remoteRoot "_package.zip"
+  # Do not use Join-Path for Windows paths when this script runs on Linux (pwsh/PSWSMan)
+  $remoteZip = "$remoteRoot\_package.zip"
   $copied = $false
 
   # Resolve reachable SMB targets: LAN IP (via WinRM), FQDN, short name
@@ -179,14 +188,51 @@ try {
 
   $smbTargets = @()
   if ($remoteIp) { $smbTargets += $remoteIp }
-  if ($domainSuffix) { $smbTargets += "$Hostname.$domainSuffix" }
+  # Only append suffix if Hostname is a short name (no dots)
+  if ($domainSuffix -and ($Hostname -notmatch '\.')) { $smbTargets += "$Hostname.$domainSuffix" }
   $smbTargets += $Hostname
   $smbTargets = $smbTargets | Select-Object -Unique
 
+  function Copy-PackageViaCifs([string]$TargetHost) {
+    # Debian/Linux path: mount.cifs is fast; PS New-PSDrive SMB and WinRM Copy-Item are slow/unreliable
+    if (-not (Get-Command mount -ErrorAction SilentlyContinue)) { throw "mount not found" }
+    $mnt = Join-Path ([System.IO.Path]::GetTempPath()) ("stella-cifs-" + [guid]::NewGuid().ToString("n"))
+    New-Item -ItemType Directory -Force -Path $mnt | Out-Null
+    $credFile = Join-Path ([System.IO.Path]::GetTempPath()) ("stella-smbcred-" + [guid]::NewGuid().ToString("n"))
+    try {
+      $smbUser = $DeployUser
+      $smbDomain = ""
+      if ($DeployUser -match '^(.+)@(.+)$') {
+        $smbUser = $Matches[1]
+        $smbDomain = (($Matches[2] -split '\.')[0]).ToUpper()
+      } elseif ($DeployUser -match '^([^\\]+)\\(.+)$') {
+        $smbDomain = $Matches[1]
+        $smbUser = $Matches[2]
+      }
+      $credLines = @("username=$smbUser", "password=$DeployPassword")
+      if ($smbDomain) { $credLines += "domain=$smbDomain" }
+      Set-Content -Path $credFile -Value ($credLines -join "`n") -Encoding ascii
+      Write-Host "Trying CIFS //$TargetHost/C$ ..."
+      & mount -t cifs "//${TargetHost}/C$" $mnt -o "credentials=$credFile,vers=3.0,uid=0,gid=0" 2>&1 | Out-String | Write-Host
+      if ($LASTEXITCODE -ne 0) { throw "mount.cifs exit $LASTEXITCODE" }
+      $dest = Join-Path $mnt "ProgramData/StellaKiosk"
+      New-Item -ItemType Directory -Force -Path $dest | Out-Null
+      Copy-Item -Path $zip -Destination (Join-Path $dest "_package.zip") -Force -ErrorAction Stop
+      $script:share = "cifs://$TargetHost/C$"
+    } finally {
+      try { & umount $mnt 2>$null } catch {}
+      Remove-Item -Force -Recurse -ErrorAction SilentlyContinue $mnt, $credFile
+    }
+  }
+
   function Copy-PackageViaSmb([string]$TargetHost) {
+    if ($IsLinux) {
+      Copy-PackageViaCifs $TargetHost
+      return
+    }
     $rootShare = "\\$TargetHost\C$"
     $destDir = "\\$TargetHost\C$\ProgramData\StellaKiosk"
-    $destZip = Join-Path $destDir "_package.zip"
+    $destZip = "$destDir\_package.zip"
     Write-Host "Trying SMB $rootShare ..."
 
     if ($cred) {
