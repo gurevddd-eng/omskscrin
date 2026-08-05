@@ -8,9 +8,9 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "start:prod": "node --import ./scripts/set-prod-env.mjs dist/index.js",
-    "prisma:generate": "prisma generate",
-    "prisma:migrate": "prisma migrate deploy",
-    "prisma:migrate:dev": "prisma migrate dev",
+    "prisma:generate": "pnpm exec prisma generate",
+    "prisma:migrate": "pnpm exec prisma migrate deploy",
+    "prisma:migrate:dev": "pnpm exec prisma migrate dev",
     "prisma:seed": "tsx prisma/seed.ts"
   },
   "dependencies": {
@@ -23,12 +23,12 @@
     "bcryptjs": "^2.4.3",
     "dotenv": "^16.4.7",
     "fastify": "^5.2.1",
+    "prisma": "^6.3.1",
     "zod": "^3.24.1"
   },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",
     "@types/node": "^22.13.1",
-    "prisma": "^6.3.1",
     "tsx": "^4.19.2",
     "typescript": "^5.7.3"
   },

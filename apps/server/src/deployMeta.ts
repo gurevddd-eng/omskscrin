@@ -26,6 +26,7 @@ export type DeployStatusDetail = {
   deployCredentialsConfigured: boolean;
   deployTransport: string;
   deployRuntimeMessage: string;
+  domainSuffix: string;
   components: DeployComponent[];
   willInstall: string[];
   prerequisites: { id: string; label: string; ok: boolean; hint?: string }[];
