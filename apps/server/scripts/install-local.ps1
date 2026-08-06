@@ -118,7 +118,15 @@ $taskUi = "StellaKioskUI"
 Unregister-ScheduledTask -TaskName $taskUi -Confirm:$false -ErrorAction SilentlyContinue
 
 if ($edge) {
-  $uiArgs = "--user-data-dir=`"$InstallRoot\edge-profile`" --kiosk http://127.0.0.1:$UiPort/ --edge-kiosk-type=fullscreen --no-first-run --disable-session-crashed-bubble --noerrdialogs --check-for-update-interval=31536000 --disable-features=msEdgeSidebar,TranslateUI,InfiniteSessionRestore --disable-pinch --overscroll-history-navigation=0"
+  # Disable Edge Visual Search hover button on images
+try {
+  $edgePol = "HKLM:\SOFTWARE\Policies\Microsoft\Edge"
+  if (-not (Test-Path $edgePol)) { New-Item -Path $edgePol -Force | Out-Null }
+  New-ItemProperty -Path $edgePol -Name "VisualSearchEnabled" -Value 0 -PropertyType DWord -Force | Out-Null
+  New-ItemProperty -Path $edgePol -Name "QuickSearchShowMiniMenu" -Value 0 -PropertyType DWord -Force | Out-Null
+} catch {}
+
+$uiArgs = "--user-data-dir=`"$InstallRoot\edge-profile`" --kiosk http://127.0.0.1:$UiPort/ --edge-kiosk-type=fullscreen --no-first-run --disable-session-crashed-bubble --noerrdialogs --check-for-update-interval=31536000 --disable-features=msEdgeSidebar,TranslateUI,InfiniteSessionRestore,msVisualSearch --disable-pinch --overscroll-history-navigation=0"
   $actionUi = New-ScheduledTaskAction -Execute $edge -Argument $uiArgs
   $triggerUi = New-ScheduledTaskTrigger -AtLogOn
   $settingsUi = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew

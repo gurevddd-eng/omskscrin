@@ -51,6 +51,10 @@ button {
 img {
   display: block;
   max-width: 100%;
+  /* Block Edge Visual Search / hover "fullscreen" chrome on images */
+  pointer-events: none;
+  -webkit-user-drag: none;
+  user-select: none;
 }
 
 /* Hide until fully decoded — avoids progressive JPEG scan-by-scan paint */
@@ -127,9 +131,10 @@ img {
 .rail__brand {
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
+  align-items: center;
   gap: 16px;
   color: var(--red);
+  text-align: center;
 }
 
 .rail__mark {
@@ -210,8 +215,10 @@ img {
 .rail__brand-text {
   display: flex;
   flex-direction: column;
+  align-items: center;
   gap: 10px;
-  max-width: 9.5rem;
+  width: 100%;
+  max-width: 11rem;
 }
 
 .rail__title {
@@ -224,7 +231,9 @@ img {
   text-transform: uppercase;
   display: flex;
   flex-direction: column;
+  align-items: center;
   gap: 0.08em;
+  text-align: center;
 }
 
 .rail__title-line {
@@ -237,6 +246,7 @@ img {
   margin: 0;
   display: flex;
   flex-direction: column;
+  align-items: center;
   gap: 7px;
   font-family: var(--font-ui);
   font-size: 0.62rem;
@@ -245,6 +255,7 @@ img {
   text-transform: uppercase;
   color: var(--muted);
   line-height: 1.35;
+  text-align: center;
 }
 
 .rail__eyebrow-rule {
@@ -252,7 +263,7 @@ img {
   width: 28px;
   height: 2px;
   border-radius: 99px;
-  background: linear-gradient(90deg, var(--red), transparent);
+  background: linear-gradient(90deg, transparent, var(--red), transparent);
 }
 
 .rail__nav {
@@ -1224,6 +1235,21 @@ img {
   height: 100%;
   object-fit: cover;
   filter: saturate(0.85) contrast(1.05);
+}
+
+.wing__media--placeholder {
+  background:
+    radial-gradient(ellipse 70% 55% at 50% 42%, rgba(227, 6, 19, 0.08), transparent 62%),
+    #101010;
+}
+
+.wing__media--placeholder img {
+  object-fit: cover;
+  filter: none;
+}
+
+.wing__media--placeholder::after {
+  background: linear-gradient(180deg, transparent 55%, rgba(0, 0, 0, 0.5));
 }
 
 .wing__media::after {

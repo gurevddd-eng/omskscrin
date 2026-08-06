@@ -129,6 +129,11 @@ function Apply-WekfBlocks([bool]$Block) {
 
 Set-CadMenuPolicies ($Mode -eq "on")
 
+# Hide Edge "Visual Search" / hover button on images (looks like fullscreen)
+$edgePol = "HKLM:\SOFTWARE\Policies\Microsoft\Edge"
+Set-PolicyDword $edgePol "VisualSearchEnabled" 0 ($Mode -eq "off")
+Set-PolicyDword $edgePol "QuickSearchShowMiniMenu" 0 ($Mode -eq "off")
+
 if ($Mode -eq "off") {
   Apply-WekfBlocks $false | Out-Null
   foreach ($name in @("MsKeyboardFilter", "MsKeyboardFilterSvc")) {

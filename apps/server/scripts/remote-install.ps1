@@ -375,7 +375,7 @@ try {
 
     $profile = Join-Path $env:ProgramData "StellaKiosk\edge-profile"
     New-Item -ItemType Directory -Force -Path $profile | Out-Null
-    $uiArgs = "--user-data-dir=`"$profile`" --kiosk http://127.0.0.1:$Port/ --edge-kiosk-type=fullscreen --no-first-run --disable-session-crashed-bubble --noerrdialogs --check-for-update-interval=31536000 --disable-features=msEdgeSidebar,TranslateUI,InfiniteSessionRestore --disable-pinch --overscroll-history-navigation=0"
+    $uiArgs = "--user-data-dir=`"$profile`" --kiosk http://127.0.0.1:$Port/ --edge-kiosk-type=fullscreen --no-first-run --disable-session-crashed-bubble --noerrdialogs --check-for-update-interval=31536000 --disable-features=msEdgeSidebar,TranslateUI,InfiniteSessionRestore,msVisualSearch --disable-pinch --overscroll-history-navigation=0"
     $once = "StellaKioskStartNow"
     $job = Start-Job -ScriptBlock {
       param($EdgePath, $Args, $Once, $User)

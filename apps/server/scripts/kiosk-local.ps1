@@ -67,7 +67,7 @@ switch ($Action) {
     }
 
     New-Item -ItemType Directory -Force -Path (Join-Path $root "edge-profile") | Out-Null
-    $uiArgs = "--user-data-dir=`"$root\edge-profile`" --kiosk http://127.0.0.1:$UiPort/ --edge-kiosk-type=fullscreen --no-first-run --disable-session-crashed-bubble --noerrdialogs --check-for-update-interval=31536000 --disable-features=msEdgeSidebar,TranslateUI,InfiniteSessionRestore --disable-pinch --overscroll-history-navigation=0"
+    $uiArgs = "--user-data-dir=`"$root\edge-profile`" --kiosk http://127.0.0.1:$UiPort/ --edge-kiosk-type=fullscreen --no-first-run --disable-session-crashed-bubble --noerrdialogs --check-for-update-interval=31536000 --disable-features=msEdgeSidebar,TranslateUI,InfiniteSessionRestore,msVisualSearch --disable-pinch --overscroll-history-navigation=0"
     Get-CimInstance Win32_Process -Filter "Name = 'msedge.exe'" -ErrorAction SilentlyContinue | ForEach-Object {
       if ($_.CommandLine -and $_.CommandLine -like "*127.0.0.1:$UiPort*") {
         try { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } catch {}

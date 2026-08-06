@@ -554,7 +554,7 @@ function edgeUiArgs() {
     `--disable-session-crashed-bubble`,
     `--noerrdialogs`,
     `--check-for-update-interval=31536000`,
-    `--disable-features=msEdgeSidebar,TranslateUI,InfiniteSessionRestore`,
+    `--disable-features=msEdgeSidebar,TranslateUI,InfiniteSessionRestore,msVisualSearch`,
     `--disable-pinch`,
     `--overscroll-history-navigation=0`,
   ].join(" ");

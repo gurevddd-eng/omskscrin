@@ -436,7 +436,8 @@ export function App() {
           title: exhibit.title,
           cta: "Смотреть видео",
           action: () => goTab("video"),
-          image: asideThumb || hero,
+          image: "/video-placeholder.png",
+          imageKind: "placeholder" as const,
         };
       }
       return {
@@ -445,6 +446,7 @@ export function App() {
         cta: "Открыть галерею",
         action: () => goTab("gallery"),
         image: asideThumb || hero,
+        imageKind: "photo" as const,
       };
     }
     if (tab === "gallery") {
@@ -454,6 +456,7 @@ export function App() {
         cta: "Читать описание",
         action: () => goTab("about"),
         image: hero,
+        imageKind: "photo" as const,
       };
     }
     return {
@@ -462,6 +465,7 @@ export function App() {
       cta: "К фотографиям",
       action: () => goTab("gallery"),
       image: asideThumb || hero,
+      imageKind: "photo" as const,
     };
   }, [exhibit, tab, video, asideThumb, hero, goTab, hasAds]);
 
@@ -561,7 +565,7 @@ export function App() {
         </div>
       ) : (
         <div className="wing__inner">
-          <div className="wing__media">
+          <div className={`wing__media${wingPromo?.imageKind === "placeholder" ? " wing__media--placeholder" : ""}`}>
             {wingPromo?.image ? (
               <ReadyImage src={wingPromo.image} alt="" />
             ) : (
