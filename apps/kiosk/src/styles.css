@@ -171,6 +171,11 @@ img {
   z-index: 1;
 }
 
+.rail__star-twinkle {
+  transform-origin: 32px 32px;
+  animation: star-twinkle 3.8s ease-in-out 0.7s infinite;
+}
+
 @keyframes star-in {
   from {
     opacity: 0;
@@ -179,6 +184,26 @@ img {
   to {
     opacity: 1;
     transform: none;
+  }
+}
+
+@keyframes star-twinkle {
+  0%,
+  100% {
+    opacity: 0.7;
+    transform: scale(0.96);
+  }
+  35% {
+    opacity: 1;
+    transform: scale(1.05);
+  }
+  50% {
+    opacity: 0.82;
+    transform: scale(1);
+  }
+  68% {
+    opacity: 1;
+    transform: scale(1.03);
   }
 }
 
@@ -816,6 +841,13 @@ img {
   word-break: break-word;
 }
 
+.about-top__side {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
 .about-top__visual {
   margin: 0;
   border-radius: var(--radius-sm);
@@ -863,8 +895,9 @@ img {
 }
 
 .about-audio {
-  margin-top: 20px;
-  max-width: 42rem;
+  margin: 0;
+  max-width: none;
+  width: 100%;
 }
 
 /* Gallery */
@@ -1019,19 +1052,93 @@ img {
   background: rgba(0, 0, 0, 0.55);
 }
 
-/* Video */
+/* Video / cinema */
 .panel--video {
-  gap: 14px;
-  padding: 18px;
+  gap: 0;
+  padding: 14px;
+  background: #141414;
+}
+
+.panel--video .panel__kicker {
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.panel--video .panel__title {
+  color: #f5f5f5;
+}
+
+.cinema {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.cinema__top {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 2px 6px 0;
+}
+
+.cinema__badge {
+  flex-shrink: 0;
+  font-family: var(--font-display);
+  font-size: 0.78rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: #fff;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: rgba(227, 6, 19, 0.2);
+  border: 1px solid rgba(227, 6, 19, 0.45);
+}
+
+.cinema__frame {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  border-radius: 14px;
+  overflow: hidden;
+  background:
+    radial-gradient(ellipse 70% 50% at 50% 40%, rgba(227, 6, 19, 0.08), transparent 65%),
+    #050505;
+  border: 1px solid var(--line);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.03),
+    0 18px 40px rgba(0, 0, 0, 0.35);
+}
+
+.cinema__frame > .player,
+.cinema__frame > .empty-block {
+  height: 100%;
+  min-height: 280px;
+}
+
+.cinema__frame::before {
+  content: "";
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  border-radius: inherit;
+  box-shadow: inset 0 0 80px rgba(0, 0, 0, 0.35);
+}
+
+.cinema__hint {
+  margin: 0;
+  padding: 0 6px 2px;
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  text-align: center;
 }
 
 .panel__cinema {
   flex: 1;
   min-height: 0;
-  border-radius: var(--radius-sm);
-  overflow: hidden;
-  background: #050505;
-  border: 1px solid var(--line);
 }
 
 /* Empty */
@@ -1328,11 +1435,13 @@ img {
 }
 
 .player {
+  position: relative;
   height: 100%;
   min-height: 280px;
   display: flex;
   flex-direction: column;
   background: #050505;
+  z-index: 2;
 }
 
 .player__stage {
@@ -1357,7 +1466,7 @@ img {
   inset: 0;
   display: grid;
   place-items: center;
-  background: rgba(0, 0, 0, 0.42);
+  background: rgba(0, 0, 0, 0.38);
   font-family: var(--font-display);
   font-size: 1.35rem;
   letter-spacing: 0.14em;
@@ -1365,20 +1474,37 @@ img {
 }
 
 .player__big-play span {
-  padding: 14px 26px;
-  border-radius: 12px;
+  padding: 14px 28px;
+  border-radius: 999px;
   background: var(--red);
   box-shadow: 0 12px 28px rgba(227, 6, 19, 0.35);
 }
 
 .player__bar {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 12px;
+  z-index: 3;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 10px;
-  padding: 12px 14px;
-  background: #121212;
-  border-top: 1px solid var(--line);
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(12, 12, 12, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(10px);
+  opacity: 0;
+  transform: translateY(8px);
+  pointer-events: none;
+  transition: opacity 0.25s ease, transform 0.25s ease;
+}
+
+.player.is-controls .player__bar {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
 }
 
 .player__btn {
@@ -1387,6 +1513,11 @@ img {
   background: #2c2c2c;
   font-weight: 600;
   font-size: 0.85rem;
+}
+
+.player__btn--play {
+  background: var(--red);
+  min-width: 4.5rem;
 }
 
 .player__time {
@@ -1416,6 +1547,7 @@ img {
 @media (prefers-reduced-motion: reduce) {
   .home-hero__img,
   .rail__star,
+  .rail__star-twinkle,
   .rail__mark-ring,
   .panel,
   .wing__inner,

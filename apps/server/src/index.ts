@@ -39,7 +39,7 @@ async function main() {
     },
   });
   await app.register(jwt, { secret: config.jwtSecret });
-  await app.register(multipart, { limits: { fileSize: 512 * 1024 * 1024 } });
+  await app.register(multipart, { limits: { fileSize: 2 * 1024 * 1024 * 1024 } });
   await app.register(fastifyStatic, {
     root: config.mediaDir,
     decorateReply: true,

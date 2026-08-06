@@ -1,36 +1,19 @@
-export type NavLink = {
+export type NavItem = {
   to: string;
   label: string;
   end?: boolean;
   adminOnly?: boolean;
 };
 
-export type NavEntry =
-  | { kind: "link"; to: string; label: string; end?: boolean }
-  | { kind: "menu"; id: string; label: string; items: NavLink[] };
-
-export const PRIMARY_NAV: NavEntry[] = [
-  { kind: "link", to: "/", label: "Доступ", end: true },
-  { kind: "link", to: "/monitor", label: "Мониторинг", end: true },
-  {
-    kind: "menu",
-    id: "content",
-    label: "Контент",
-    items: [
-      { to: "/exhibits", label: "Экспонаты" },
-      { to: "/ads", label: "Реклама" },
-    ],
-  },
-  { kind: "link", to: "/kiosks", label: "Киоски" },
-  {
-    kind: "menu",
-    id: "system",
-    label: "Система",
-    items: [
-      { to: "/settings", label: "Настройки" },
-      { to: "/users", label: "Пользователи", adminOnly: true },
-    ],
-  },
+/** Flat top nav — no dropdowns (snappy, no lag). */
+export const PRIMARY_NAV: NavItem[] = [
+  { to: "/", label: "Доступ", end: true },
+  { to: "/monitor", label: "Мониторинг", end: true },
+  { to: "/exhibits", label: "Экспонаты" },
+  { to: "/ads", label: "Реклама" },
+  { to: "/kiosks", label: "Киоски" },
+  { to: "/settings", label: "Настройки" },
+  { to: "/users", label: "Пользователи", adminOnly: true },
 ];
 
 const PAGE_MAP: { match: (p: string) => boolean; section: string; title: string }[] = [
@@ -51,8 +34,4 @@ export function getPageMeta(pathname: string): { section: string; title: string 
 export function navIsActive(pathname: string, to: string, end?: boolean) {
   if (end) return pathname === to || (to === "/" && pathname === "");
   return pathname === to || pathname.startsWith(`${to}/`);
-}
-
-export function menuIsActive(pathname: string, items: NavLink[]) {
-  return items.some((item) => navIsActive(pathname, item.to, item.end));
 }

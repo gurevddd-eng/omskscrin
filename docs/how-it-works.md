@@ -101,7 +101,7 @@ stella-udhb/
 
 ### 4.1. Технологии
 
-- **Fastify 5** — HTTP API, JWT, multipart (загрузка файлов до 512 MB), static (медиа и admin dist).
+- **Fastify 5** — HTTP API, JWT, multipart (загрузка файлов до 2 GB), static (медиа и admin dist).
 - **Prisma + PostgreSQL** — пользователи, экспонаты, киоски, глобальные настройки.
 - **PowerShell / OpenSSH** — удалённые операции на **Windows-киосках** с сервера (Debian/Linux или Windows): WinRM через `pwsh` или SSH.
 

@@ -98,14 +98,25 @@ function useClock() {
 function StarLogo() {
   return (
     <svg className="rail__star" viewBox="0 0 64 64" aria-hidden>
-      <path
-        fill="currentColor"
-        d="M32 4l7.4 18.2H60l-15 12.2 5.4 19.2L32 43.4 13.6 53.6l5.4-19.2L4 22.2h20.6L32 4z"
-      />
-      <path
-        fill="#1a1a1a"
-        d="M32 18l3.2 8H44l-6.4 5 2.3 8.2L32 34.4l-7.9 4.8 2.3-8.2L20 26h8.8L32 18z"
-      />
+      <defs>
+        <filter id="star-glow" x="-40%" y="-40%" width="180%" height="180%">
+          <feGaussianBlur in="SourceGraphic" stdDeviation="1.2" result="blur" />
+          <feMerge>
+            <feMergeNode in="blur" />
+            <feMergeNode in="SourceGraphic" />
+          </feMerge>
+        </filter>
+      </defs>
+      <g className="rail__star-twinkle" filter="url(#star-glow)">
+        <path
+          fill="currentColor"
+          d="M32 4l7.4 18.2H60l-15 12.2 5.4 19.2L32 43.4 13.6 53.6l5.4-19.2L4 22.2h20.6L32 4z"
+        />
+        <path
+          fill="#1a1a1a"
+          d="M32 18l3.2 8H44l-6.4 5 2.3 8.2L32 34.4l-7.9 4.8 2.3-8.2L20 26h8.8L32 18z"
+        />
+      </g>
     </svg>
   );
 }
@@ -666,25 +677,27 @@ export function App() {
                     <p className="about-top__empty">Характеристики не заполнены</p>
                   )}
                 </div>
-                {hero ? (
-                  <figure className="about-top__visual">
-                    <ReadyImage src={hero} alt="" />
-                    <figcaption className="about-top__cap">
-                      <span>Парк Победы</span>
-                      <span>{exhibit.title}</span>
-                    </figcaption>
-                  </figure>
-                ) : (
-                  <div className="about-top__visual about-top__visual--empty" />
-                )}
+                <div className="about-top__side">
+                  {hero ? (
+                    <figure className="about-top__visual">
+                      <ReadyImage src={hero} alt="" />
+                      <figcaption className="about-top__cap">
+                        <span>Парк Победы</span>
+                        <span>{exhibit.title}</span>
+                      </figcaption>
+                    </figure>
+                  ) : (
+                    <div className="about-top__visual about-top__visual--empty" />
+                  )}
+                  {audio ? (
+                    <div className="about-audio">
+                      <AudioPlayer src={audio} active={tab === "about"} title="Аудиогид" />
+                    </div>
+                  ) : null}
+                </div>
               </div>
               <div className="about-prose">
                 <p className="panel__body">{exhibit.body || exhibit.summary}</p>
-                {audio ? (
-                  <div className="about-audio">
-                    <AudioPlayer src={audio} active={tab === "about"} title="Прослушать рассказ" />
-                  </div>
-                ) : null}
               </div>
             </div>
           </section>
@@ -784,17 +797,30 @@ export function App() {
 
         {tab === "video" && (
           <section className="panel panel--video" key={`video-${screenKey}`}>
-            <header className="page-head">
-              <p className="panel__kicker">Видеоматериал</p>
-              <h1 className="panel__title panel__title--sm">{exhibit.title}</h1>
-              <div className="page-head__rule" />
-            </header>
-            <div className="panel__cinema">
+            <div className="cinema">
+              <header className="cinema__top">
+                <div>
+                  <p className="panel__kicker">Видеоматериал</p>
+                  <h1 className="panel__title panel__title--sm">{exhibit.title}</h1>
+                </div>
+                {video ? (
+                  <span className="cinema__badge" aria-hidden>
+                    HD
+                  </span>
+                ) : null}
+              </header>
+
+              <div className="cinema__frame">
+                {video ? (
+                  <VideoPlayer src={video} active={tab === "video"} />
+                ) : (
+                  <EmptyBlock title="Видео не загружено" text="Прикрепите видеофайл к экспонату в админке." />
+                )}
+              </div>
+
               {video ? (
-                <VideoPlayer src={video} active={tab === "video"} />
-              ) : (
-                <EmptyBlock title="Видео не загружено" text="Прикрепите видеофайл к экспонату в админке." />
-              )}
+                <p className="cinema__hint">Коснитесь экрана или кнопки «Пауза», чтобы остановить ролик</p>
+              ) : null}
             </div>
           </section>
         )}
