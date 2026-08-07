@@ -315,7 +315,6 @@ img {
 .panel--timeline {
   padding: 0;
   gap: 0;
-  overflow: auto;
   background: #0a0a0a;
 }
 
@@ -339,6 +338,7 @@ img {
   border-radius: 0;
   object-fit: cover;
   vertical-align: top;
+  flex-shrink: 0;
 }
 
 .rail__nav-btn {
@@ -533,6 +533,14 @@ img {
   border: 1px solid var(--line);
   animation: rise 0.45s var(--ease) both;
   overflow: hidden;
+}
+
+.panel.panel--timeline {
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
 }
 
 @keyframes rise {
