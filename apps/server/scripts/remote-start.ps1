@@ -72,9 +72,9 @@ $startBlock = {
     throw "Task $taskAgent missing. Install software first."
   }
 
-  try { Enable-ScheduledTask -TaskName $taskAgent -ErrorAction SilentlyContinue } catch {}
+  try { Enable-ScheduledTask -TaskName $taskAgent -ErrorAction SilentlyContinue | Out-Null } catch {}
   foreach ($t in @("StellaKioskUI", "StellaKioskKeyBlock")) {
-    try { Enable-ScheduledTask -TaskName $t -ErrorAction SilentlyContinue } catch {}
+    try { Enable-ScheduledTask -TaskName $t -ErrorAction SilentlyContinue | Out-Null } catch {}
   }
 
   $alreadyHealthy = Test-AgentHealthy $HealthPort
@@ -99,77 +99,60 @@ $startBlock = {
     }
   }
 
+  # Do NOT Register/Start interactive Edge tasks under WinRM — they hang the session.
+  # Agent watchdog reads LAUNCH_UI and opens Edge on the console session.
+  function Test-EdgeUi([int]$Port) {
+    try {
+      $procs = Get-CimInstance Win32_Process -Filter "Name = 'msedge.exe'" -ErrorAction SilentlyContinue
+      foreach ($p in $procs) {
+        if ($p.CommandLine -and (
+            $p.CommandLine -like "*127.0.0.1:$Port*" -or
+            $p.CommandLine -like "*StellaKiosk\edge-profile*"
+          )) {
+          return $true
+        }
+      }
+    } catch {}
+    return $false
+  }
+
   $edge = Find-Edge
   if (-not $edge) {
-    return "OK agent healthy; Edge not found (install Edge, agent will retry UI)"
+    return "OK agent healthy; Edge binary not found (install Edge)"
   }
 
-  New-Item -ItemType Directory -Force -Path (Join-Path $root "edge-profile") | Out-Null
-  $bust = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
-  $uiArgs = "--user-data-dir=`"$root\edge-profile`" --kiosk http://127.0.0.1:$Port/?nocache=$bust --edge-kiosk-type=fullscreen --no-first-run --disable-session-crashed-bubble --noerrdialogs --check-for-update-interval=31536000 --disable-features=msEdgeSidebar,TranslateUI,InfiniteSessionRestore,msVisualSearch --disable-pinch --overscroll-history-navigation=0 --disk-cache-size=1"
-
-  Get-CimInstance Win32_Process -Filter "Name = 'msedge.exe'" -ErrorAction SilentlyContinue | ForEach-Object {
-    if ($_.CommandLine -and ($_.CommandLine -like "*127.0.0.1:$Port*" -or $_.CommandLine -like "*StellaKiosk\edge-profile*")) {
-      try { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } catch {}
-    }
+  if (Test-EdgeUi $Port) {
+    return "OK agent healthy; Edge UI already running"
   }
 
-  $taskUi = "StellaKioskUI"
-  $actionUi = New-ScheduledTaskAction -Execute $edge -Argument $uiArgs
-  if (-not (Get-ScheduledTask -TaskName $taskUi -ErrorAction SilentlyContinue)) {
-    $triggerUi = New-ScheduledTaskTrigger -AtLogOn
-    Register-ScheduledTask -TaskName $taskUi -Action $actionUi -Trigger $triggerUi -Force | Out-Null
-  } else {
-    try { Enable-ScheduledTask -TaskName $taskUi -ErrorAction SilentlyContinue } catch {}
-    Set-ScheduledTask -TaskName $taskUi -Action $actionUi -ErrorAction SilentlyContinue | Out-Null
-  }
-
-  # Agent watchdog opens Edge immediately (avoids long WinRM scheduled-task hangs)
+  # Best-effort: clear stale Edge so watchdog launches cleanly
   try {
-    Set-Content -Path (Join-Path $root "LAUNCH_UI") -Value ([string]$bust) -Encoding ascii -Force
+    Get-CimInstance Win32_Process -Filter "Name = 'msedge.exe'" -ErrorAction SilentlyContinue | ForEach-Object {
+      if ($_.CommandLine -and ($_.CommandLine -like "*127.0.0.1:$Port*" -or $_.CommandLine -like "*StellaKiosk\edge-profile*")) {
+        try { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } catch {}
+      }
+    }
   } catch {}
 
-  $consoleUser = Get-ConsoleUserId
-  $once = "StellaKioskStartNow"
-  Unregister-ScheduledTask -TaskName $once -Confirm:$false -ErrorAction SilentlyContinue
-  $launchHow = "signaled agent LAUNCH_UI"
-
-  $launchJob = Start-Job -ScriptBlock {
-    param($EdgePath, $Args, $Once, $ConsoleUser, $RunAsUser, $RunAsPassword, $TaskUi)
-    $ErrorActionPreference = "Stop"
-    $action = New-ScheduledTaskAction -Execute $EdgePath -Argument $Args
-    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew
-    if ($ConsoleUser) {
-      $principal = New-ScheduledTaskPrincipal -UserId $ConsoleUser -LogonType Interactive -RunLevel Highest
-      Register-ScheduledTask -TaskName $Once -Action $action -Principal $principal -Settings $settings -Force | Out-Null
-      Start-ScheduledTask -TaskName $Once -ErrorAction Stop
-      return "interactive task as $ConsoleUser"
-    }
-    if ($RunAsUser -and $RunAsPassword) {
-      $netUser = $RunAsUser
-      if ($RunAsUser -match '^(.+)@(.+)$') { $netUser = "$($Matches[2])\$($Matches[1])" }
-      $principal = New-ScheduledTaskPrincipal -UserId $netUser -LogonType Interactive -RunLevel Highest
-      Register-ScheduledTask -TaskName $Once -Action $action -Principal $principal -Settings $settings -Password $RunAsPassword -Force | Out-Null
-      Start-ScheduledTask -TaskName $Once -ErrorAction Stop
-      return "interactive task as $netUser (deploy creds)"
-    }
-    Start-ScheduledTask -TaskName $TaskUi -ErrorAction SilentlyContinue
-    return "AtLogOn task triggered (no console user)"
-  } -ArgumentList $edge, $uiArgs, $once, $consoleUser, $RunAsUser, $RunAsPassword, $taskUi
-
-  if (Wait-Job -Job $launchJob -Timeout 8) {
-    try {
-      $launchHow = Receive-Job -Job $launchJob -ErrorAction Stop
-    } catch {
-      $launchHow = "Edge task error: $($_.Exception.Message); agent LAUNCH_UI set"
-    }
-  } else {
-    Stop-Job -Job $launchJob -ErrorAction SilentlyContinue
-    $launchHow = "Edge task deferred; agent LAUNCH_UI set"
+  $bust = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+  try {
+    Set-Content -Path (Join-Path $root "LAUNCH_UI") -Value ([string]$bust) -Encoding ascii -Force
+  } catch {
+    throw "Failed to write LAUNCH_UI flag: $($_.Exception.Message)"
   }
-  Remove-Job -Job $launchJob -Force -ErrorAction SilentlyContinue
 
-  return "OK agent healthy; Edge launch: $launchHow"
+  try { Enable-ScheduledTask -TaskName "StellaKioskUI" -ErrorAction SilentlyContinue | Out-Null } catch {}
+
+  # Wait until Edge is actually on the interactive desktop — do not report success early
+  $deadline = (Get-Date).AddSeconds(28)
+  while ((Get-Date) -lt $deadline) {
+    Start-Sleep -Milliseconds 400
+    if (Test-EdgeUi $Port) {
+      return "OK agent healthy; Edge UI running"
+    }
+  }
+
+  throw "Agent healthy but Edge UI did not start within 28s (check interactive session / explorer)"
 }
 
 $Hostname = $Hostname.Trim()

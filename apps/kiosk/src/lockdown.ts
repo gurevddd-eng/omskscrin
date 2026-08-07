@@ -35,14 +35,8 @@ export function installKioskLockdown() {
     true
   );
 
-  window.addEventListener(
-    "beforeunload",
-    (e) => {
-      e.preventDefault();
-      e.returnValue = "";
-    },
-    true
-  );
+  // Do NOT hook beforeunload: OTA soft-reload and Edge restart would show
+  // “Leave site?” and block the update. Kiosk mode already prevents navigation.
 
   const refocus = () => {
     if (!keyboardBlocked) return;

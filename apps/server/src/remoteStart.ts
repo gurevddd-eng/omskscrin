@@ -122,7 +122,7 @@ async function runStartUiJob(id: string) {
   try {
     let lastStage: UiStartStage = "connecting";
     const result = await runDeployScript("remote-start", args, {
-      timeoutMs: 60_000,
+      timeoutMs: 90_000,
       onLine: (line) => {
         const stage = inferUiStartStage(line);
         if (stage && stage !== lastStage && stage !== "done") {
@@ -139,6 +139,7 @@ async function runStartUiJob(id: string) {
     const text = `${result.stdout}\n${result.stderr}`.trim();
     if (/START_OK/i.test(text)) {
       const msg = parseOkLine(text, /START_OK:/i, UI_START_STAGE_LABEL.done);
+      // Confirm probe after Edge is up (script already waited for msedge)
       await setUiStartJob(id, "ok", "done", msg);
       await probeKioskById(id);
       const enriched = await loadKioskDto(id);
@@ -147,12 +148,12 @@ async function runStartUiJob(id: string) {
       return;
     }
 
-    await setUiStartJob(
-      id,
-      "error",
-      "error",
-      summarizeDeployOutput(text, result.code) || "Не удалось запустить"
-    );
+    // Script threw (e.g. Edge never appeared) — surface as error, not false success
+    const failMsg =
+      summarizeDeployOutput(text, result.code) ||
+      (/Edge UI did not start/i.test(text) ? "Edge UI не запустился" : null) ||
+      "Не удалось запустить";
+    await setUiStartJob(id, "error", "error", failMsg);
     scheduleJobClear(id, 30_000);
   } catch (e) {
     await setUiStartJob(id, "error", "error", e instanceof Error ? e.message : "Start failed");

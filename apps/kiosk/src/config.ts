@@ -26,7 +26,7 @@ const defaults: KioskConfig = {
   hostname: "patriotstela1",
   serverUrl: "http://localhost:8080",
   syncIntervalSec: 20,
-  idleTimeoutSec: 60,
+  idleTimeoutSec: 600,
   heartbeatIntervalSec: 30,
   healthPort: 47821,
   appVersion: "0.1.0",

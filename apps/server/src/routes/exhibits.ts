@@ -5,6 +5,7 @@ import { z } from "zod";
 import { prisma } from "../prisma.js";
 import { authenticate, requireRoles } from "../auth.js";
 import { toFileDto } from "./files.js";
+import { broadcastContentSync } from "../contentHub.js";
 
 const specRowSchema = z.object({
   label: z.string(),
@@ -185,6 +186,7 @@ export async function registerExhibitRoutes(app: FastifyInstance) {
         });
       });
 
+      broadcastContentSync({ reason: "exhibit", exhibitId: id });
       return mapExhibit(id);
     }
   );

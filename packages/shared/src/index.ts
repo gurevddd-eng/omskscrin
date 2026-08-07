@@ -1,3 +1,13 @@
+import type { ThemeMode as ThemeModeT, ThemeName as ThemeNameT } from "./theme.js";
+export type ThemeMode = ThemeModeT;
+export type ThemeName = ThemeNameT;
+export {
+  isDarkBySchedule,
+  normalizeHhMm,
+  parseThemeMode,
+  resolveEffectiveTheme,
+} from "./theme.js";
+
 export const ROLES = ["admin", "editor", "viewer"] as const;
 export type Role = (typeof ROLES)[number];
 
@@ -231,6 +241,7 @@ export interface KioskDto {
   syncStatus: SyncStatus;
   syncMessage: string | null;
   appVersion: string | null;
+  softwareVersion: string | null;
   probeStatus: ProbeStatus;
   probeMessage: string | null;
   lastProbeAt: string | null;
@@ -254,6 +265,7 @@ export interface HeartbeatRequest {
   syncStatus?: SyncStatus;
   syncMessage?: string | null;
   appVersion?: string | null;
+  softwareVersion?: string | null;
   hostname?: string;
 }
 
@@ -292,6 +304,10 @@ export interface KioskManifest {
   blockKeyboard: boolean;
   /** When false, kiosk software stays fully off (persists across reboot) */
   softwareEnabled: boolean;
+  themeMode: ThemeMode;
+  themeDarkFrom: string;
+  themeDarkTo: string;
+  theme: ThemeName | null;
   settingsVersion: string;
   files: ManifestFile[];
   contentVersion: string | null;
@@ -314,6 +330,12 @@ export interface KioskUpdates {
   updateAvailable: boolean;
   packageUrl: string;
   serverTime: string;
+  /** Fleet theme control */
+  themeMode: ThemeMode;
+  themeDarkFrom: string;
+  themeDarkTo: string;
+  /** Resolved now (null when themeMode=manual) */
+  theme: ThemeName | null;
 }
 
 export interface SiteNetworkDto {
@@ -330,6 +352,11 @@ export interface SiteNetworkDto {
 export interface SiteSettingsDto {
   blockKeyboard: boolean;
   softwareEnabled: boolean;
+  themeMode: ThemeMode;
+  themeDarkFrom: string;
+  themeDarkTo: string;
+  /** Current effective theme when not manual */
+  theme: ThemeName | null;
   settingsVersion: string;
   adsVersion: string;
   updatedAt: string;

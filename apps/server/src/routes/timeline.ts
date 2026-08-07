@@ -6,6 +6,7 @@ import { prisma } from "../prisma.js";
 import { authenticate, requireRoles } from "../auth.js";
 import { toFileDto } from "./files.js";
 import { ensureSiteSettings } from "../siteSettings.js";
+import { broadcastContentSync } from "../contentHub.js";
 
 const pageInputSchema = z.object({
   id: z.string().min(1).max(64).optional(),
@@ -95,6 +96,7 @@ export async function registerTimelineRoutes(app: FastifyInstance) {
     });
 
     const state = await getGlobalTimelineState();
+    broadcastContentSync({ reason: "timeline" });
     return {
       pages: state.pages,
       timelineVersion: state.timelineVersion,

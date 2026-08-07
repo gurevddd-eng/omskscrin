@@ -30,10 +30,24 @@ import { enrichKioskDto } from "../kioskDtoEnrich.js";
 import { requestClearKioskPolicies } from "../remoteClearPolicies.js";
 import { requestStartKioskRuntime } from "../remoteStart.js";
 import { requestStopKioskRuntime } from "../remoteStop.js";
+import {
+  requestBulkSoftwareUpdate,
+  requestKioskSoftwareUpdate,
+} from "../remoteSoftwareUpdate.js";
+import {
+  acknowledgeSoftwareVersion,
+  getSoftwareUpdatePending,
+} from "../softwareUpdatePending.js";
 import { prepareKioskDeletion } from "../kioskDeletion.js";
 import { uninstallKioskRuntime } from "../remoteUninstall.js";
 import { pushKioskConfig } from "../remotePushConfig.js";
 import { getDeployMeta, getDeployStatusDetail } from "../deployMeta.js";
+import {
+  normalizeHhMm,
+  parseThemeMode,
+  resolveEffectiveTheme,
+} from "../themeSchedule.js";
+import { addContentClient, broadcastContentSync, sendContentHello } from "../contentHub.js";
 
 function resolveKioskHostname(raw: string) {
   return expandHostname(normalizeHostname(raw), getEffectiveDeploy().domainSuffix);
@@ -60,6 +74,7 @@ const heartbeatSchema = z.object({
   syncStatus: z.enum(["ok", "error", "unknown"]).optional(),
   syncMessage: z.string().nullable().optional(),
   appVersion: z.string().nullable().optional(),
+  softwareVersion: z.string().nullable().optional(),
   hostname: z.string().optional(),
 });
 
@@ -227,6 +242,17 @@ export async function registerKioskRoutes(app: FastifyInstance) {
     }
   );
 
+  app.post(
+    "/api/kiosks/software-update",
+    { preHandler: requireRoles("admin", "editor") },
+    async (request) => {
+      const body = z
+        .object({ ids: z.array(z.string()).optional() })
+        .parse(request.body ?? {});
+      return requestBulkSoftwareUpdate(body.ids);
+    }
+  );
+
   app.post("/api/kiosks", { preHandler: requireRoles("admin", "editor") }, async (request, reply) => {
     const body = kioskSchema.parse(request.body);
     await refreshDeployCredentialsFromDb();
@@ -299,6 +325,9 @@ export async function registerKioskRoutes(app: FastifyInstance) {
         });
         const dto = mapKiosk(k);
         broadcastKioskUpsert(dto);
+        if (body.exhibitId !== undefined) {
+          broadcastContentSync({ reason: "kiosk-exhibit", exhibitId: body.exhibitId });
+        }
         if (body.hostname || body.healthPort || body.uiPort) void probeKioskById(id);
         return dto;
       } catch {
@@ -377,6 +406,22 @@ export async function registerKioskRoutes(app: FastifyInstance) {
         message: result.message,
         kiosk: result.kiosk,
       };
+    }
+  );
+
+  app.post(
+    "/api/kiosks/:id/software-update",
+    { preHandler: requireRoles("admin", "editor") },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+      const result = await requestKioskSoftwareUpdate(id);
+      if (!result.kiosk && result.message === "Not found") {
+        return reply.code(404).send({ error: "Not found" });
+      }
+      if (result.mode === "no-package") {
+        return reply.code(409).send({ ...result, error: result.message });
+      }
+      return result;
     }
   );
 
@@ -554,6 +599,10 @@ export async function registerKioskRoutes(app: FastifyInstance) {
       timelineVersion: timeline.timelineVersion,
       blockKeyboard: globalAds.blockKeyboard,
       softwareEnabled: globalAds.softwareEnabled,
+      themeMode: globalAds.themeMode,
+      themeDarkFrom: globalAds.themeDarkFrom,
+      themeDarkTo: globalAds.themeDarkTo,
+      theme: globalAds.theme,
       settingsVersion: globalAds.settingsVersion,
       files,
       contentVersion: exhibit?.contentVersion ?? null,
@@ -598,6 +647,38 @@ export async function registerKioskRoutes(app: FastifyInstance) {
     return reply.send(createReadStream(meta.packageZipPath));
   });
 
+  /** Live push: admin content changes → kiosk UI syncs immediately (no JWT). */
+  app.get("/api/kiosks/:kioskId/events", async (request, reply) => {
+    const { kioskId } = request.params as { kioskId: string };
+    const key = normalizeHostname(kioskId);
+    const kiosk = await prisma.kiosk.findFirst({
+      where: { OR: [{ kioskId: key }, { hostname: key }, { kioskId }, { hostname: kioskId }] },
+      select: { kioskId: true },
+    });
+    if (!kiosk) return reply.code(404).send({ error: "Kiosk not found" });
+
+    reply.hijack();
+    reply.raw.writeHead(200, {
+      "Content-Type": "text/event-stream; charset=utf-8",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+      "X-Accel-Buffering": "no",
+      "Access-Control-Allow-Origin": "*",
+    });
+    reply.raw.write(": ok\n\n");
+    addContentClient(kiosk.kioskId, reply.raw);
+    sendContentHello(reply.raw);
+
+    const keepAlive = setInterval(() => {
+      try {
+        reply.raw.write(`: ping ${Date.now()}\n\n`);
+      } catch {
+        clearInterval(keepAlive);
+      }
+    }, 25_000);
+    reply.raw.on("close", () => clearInterval(keepAlive));
+  });
+
   app.get("/api/kiosks/:kioskId/updates", async (request, reply) => {
     reply.header("Cache-Control", "no-store");
     const { kioskId } = request.params as { kioskId: string };
@@ -611,13 +692,25 @@ export async function registerKioskRoutes(app: FastifyInstance) {
     const meta = getDeployMeta();
     const q = request.query as { softwareVersion?: string };
     const localSw = String(q.softwareVersion || "").trim();
-    const updateAvailable = Boolean(localSw && localSw !== meta.softwareVersion && meta.updateZipPath);
+    const hasZip = Boolean(meta.updateZipPath || meta.packageZipPath);
+    const updateAvailable = Boolean(
+      localSw && meta.softwareVersion && localSw !== meta.softwareVersion && hasZip
+    );
     // Versions only — avoid loading full ads/timeline media graphs on every poll
     const settings = await ensureSiteSettings();
     const contentVersion = kiosk.exhibit?.contentVersion ?? null;
     const adsVersion = settings.adsVersion;
     const settingsVersion = settings.settingsVersion;
     const timelineVersion = settings.timelineVersion || "1";
+    const themeMode = parseThemeMode(settings.themeMode);
+    const themeDarkFrom = normalizeHhMm(settings.themeDarkFrom, "20:00");
+    const themeDarkTo = normalizeHhMm(settings.themeDarkTo, "08:00");
+
+    const pending = getSoftwareUpdatePending(kiosk.kioskId);
+    const forceUpdate = Boolean(
+      pending && meta.softwareVersion && pending.target === meta.softwareVersion && hasZip
+    );
+    if (localSw) acknowledgeSoftwareVersion(kiosk.kioskId, localSw);
 
     return {
       kioskId: kiosk.kioskId,
@@ -627,10 +720,19 @@ export async function registerKioskRoutes(app: FastifyInstance) {
       settingsVersion,
       blockKeyboard: settings.blockKeyboard,
       softwareEnabled: settings.softwareEnabled,
+      themeMode,
+      themeDarkFrom,
+      themeDarkTo,
+      theme: resolveEffectiveTheme({
+        mode: themeMode,
+        darkFrom: themeDarkFrom,
+        darkTo: themeDarkTo,
+      }),
       syncFingerprint: syncFingerprint(contentVersion, adsVersion, settingsVersion, timelineVersion),
       softwareVersion: meta.softwareVersion,
       appVersion: meta.appVersion,
-      updateAvailable: localSw ? updateAvailable : Boolean(meta.updateZipPath || meta.packageZipPath),
+      updateAvailable: forceUpdate || (localSw ? updateAvailable : hasZip),
+      forceUpdate,
       packageUrl: "/api/deploy/update.zip",
       serverTime: new Date().toISOString(),
     };
@@ -654,13 +756,47 @@ export async function registerKioskRoutes(app: FastifyInstance) {
           syncStatus: body.syncStatus,
           syncMessage: body.syncMessage === undefined ? undefined : body.syncMessage,
           appVersion: body.appVersion === undefined ? undefined : body.appVersion,
+          softwareVersion: body.softwareVersion === undefined ? undefined : body.softwareVersion,
           hostname: body.hostname ? normalizeHostname(body.hostname) : undefined,
         },
-        include: { exhibit: { select: { title: true } } },
+        include: { exhibit: { select: { title: true, contentVersion: true } } },
       });
       const dto = mapKiosk(k);
       broadcastKioskUpsert(dto);
-      return dto;
+
+      const meta = getDeployMeta();
+      const settings = await ensureSiteSettings();
+      const contentVersion = k.exhibit?.contentVersion ?? null;
+      const adsVersion = settings.adsVersion;
+      const settingsVersion = settings.settingsVersion;
+      const timelineVersion = settings.timelineVersion || "1";
+      const hasZip = Boolean(meta.updateZipPath || meta.packageZipPath);
+      const pending = getSoftwareUpdatePending(k.kioskId) || getSoftwareUpdatePending(k.hostname);
+      const forceUpdate = Boolean(
+        pending && meta.softwareVersion && pending.target === meta.softwareVersion && hasZip
+      );
+      const updateAvailable = Boolean(
+        forceUpdate ||
+          (body.softwareVersion &&
+            meta.softwareVersion &&
+            body.softwareVersion !== meta.softwareVersion &&
+            hasZip)
+      );
+
+      // Acknowledge only after force flag was exposed (grace inside helper)
+      if (body.softwareVersion) acknowledgeSoftwareVersion(k.kioskId, body.softwareVersion);
+
+      return {
+        ...dto,
+        contentVersion,
+        adsVersion,
+        settingsVersion,
+        timelineVersion,
+        syncFingerprint: syncFingerprint(contentVersion, adsVersion, settingsVersion, timelineVersion),
+        targetSoftwareVersion: meta.softwareVersion,
+        updateAvailable,
+        forceUpdate,
+      };
     } catch {
       return reply.code(404).send({ error: "Kiosk not found" });
     }

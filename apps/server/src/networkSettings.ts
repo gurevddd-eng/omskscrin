@@ -72,8 +72,10 @@ export function buildKioskJsonConfig(
     hostname: kiosk.hostname.toLowerCase(),
     kioskId: kiosk.kioskId.toLowerCase(),
     serverUrl: net.serverUrl,
-    syncIntervalSec: 300,
-    idleTimeoutSec: 60,
+    syncIntervalSec: 60,
+    /** OTA poll — keep shorter than content sync so fleet catches builds */
+    softwareCheckIntervalSec: 60,
+    idleTimeoutSec: 600,
     heartbeatIntervalSec: 30,
     healthPort: net.healthPort,
     uiPort: net.uiPort,

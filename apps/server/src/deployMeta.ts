@@ -31,11 +31,15 @@ export type DeployStatusDetail = {
   willInstall: string[];
   prerequisites: { id: string; label: string; ok: boolean; hint?: string }[];
 };
+function stripBom(s: string): string {
+  return s.replace(/^\uFEFF/, "");
+}
+
 function readVersionJson(dir: string): { softwareVersion?: string; appVersion?: string; builtAt?: string } | null {
   const file = path.join(dir, "version.json");
   if (!existsSync(file)) return null;
   try {
-    return JSON.parse(readFileSync(file, "utf8")) as {
+    return JSON.parse(stripBom(readFileSync(file, "utf8"))) as {
       softwareVersion?: string;
       appVersion?: string;
       builtAt?: string;
@@ -49,7 +53,7 @@ function readVersionText(dir: string): string | null {
   const file = path.join(dir, "VERSION");
   if (!existsSync(file)) return null;
   try {
-    return readFileSync(file, "utf8").trim() || null;
+    return stripBom(readFileSync(file, "utf8")).trim() || null;
   } catch {
     return null;
   }

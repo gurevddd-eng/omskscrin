@@ -67,7 +67,7 @@ function Write-KioskConfig([string]$TargetRoot) {
     kioskId              = $KioskId.ToLower()
     serverUrl            = $ServerUrl.TrimEnd("/")
     syncIntervalSec      = 300
-    idleTimeoutSec       = 60
+    idleTimeoutSec       = 600
     heartbeatIntervalSec = 30
     healthPort           = $HealthPort
     uiPort               = $UiPort
@@ -320,7 +320,7 @@ try {
     kioskId              = $KioskId.ToLower()
     serverUrl            = $ServerUrl.TrimEnd("/")
     syncIntervalSec      = 300
-    idleTimeoutSec       = 60
+    idleTimeoutSec       = 600
     heartbeatIntervalSec = 30
     healthPort           = $HealthPort
     uiPort               = $UiPort

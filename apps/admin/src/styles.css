@@ -1453,6 +1453,146 @@ label {
   line-height: 1.55;
 }
 
+.exhibit-editor__body-label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.exhibit-editor__field-title {
+  font-size: 0.82rem;
+  font-weight: 500;
+  color: var(--muted);
+}
+
+/* —— Rich text editor (TipTap) —— */
+.rte {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel, #fff);
+  overflow: hidden;
+  min-width: 0;
+}
+
+.rte.is-disabled {
+  opacity: 0.72;
+  pointer-events: none;
+}
+
+.rte--loading {
+  padding: 1rem;
+  color: var(--muted);
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+}
+
+.rte__toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  padding: 0.45rem 0.5rem;
+  border-bottom: 1px solid var(--border);
+  background: rgba(28, 28, 35, 0.03);
+}
+
+.rte__btn {
+  min-width: 2rem;
+  height: 2rem;
+  padding: 0 0.45rem;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.rte__btn:hover:not(:disabled) {
+  background: rgba(28, 28, 35, 0.06);
+}
+
+.rte__btn.is-active {
+  background: rgba(209, 4, 18, 0.12);
+  border-color: rgba(209, 4, 18, 0.28);
+  color: #b10410;
+}
+
+.rte__btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.rte__sep {
+  width: 1px;
+  align-self: stretch;
+  margin: 0.15rem 0.2rem;
+  background: var(--border);
+}
+
+.rte .tiptap,
+.rte__prose {
+  min-height: 280px;
+  max-height: 520px;
+  overflow: auto;
+  padding: 0.85rem 1rem 1.1rem;
+  outline: none;
+  font-family: var(--font-serif, Georgia, "Times New Roman", serif);
+  font-size: 1.05rem;
+  line-height: 1.55;
+}
+
+.rte .tiptap p,
+.rte__prose p {
+  margin: 0 0 0.75em;
+}
+
+.rte .tiptap h2,
+.rte__prose h2 {
+  margin: 1em 0 0.4em;
+  font-size: 1.35rem;
+  line-height: 1.25;
+}
+
+.rte .tiptap h3,
+.rte__prose h3 {
+  margin: 0.9em 0 0.35em;
+  font-size: 1.15rem;
+  line-height: 1.3;
+}
+
+.rte .tiptap ul,
+.rte .tiptap ol,
+.rte__prose ul,
+.rte__prose ol {
+  margin: 0 0 0.85em;
+  padding-left: 1.35em;
+}
+
+.rte .tiptap blockquote,
+.rte__prose blockquote {
+  margin: 0.85em 0;
+  padding: 0.2em 0 0.2em 0.9em;
+  border-left: 3px solid rgba(209, 4, 18, 0.55);
+  color: var(--muted);
+}
+
+.rte .tiptap a,
+.rte__prose a {
+  color: #b10410;
+  text-decoration: underline;
+}
+
+.rte .tiptap p.is-editor-empty:first-child::before,
+.rte .tiptap .is-empty::before {
+  color: var(--muted);
+  content: attr(data-placeholder);
+  float: left;
+  height: 0;
+  pointer-events: none;
+}
+
 .media-block {
   display: flex;
   flex-direction: column;

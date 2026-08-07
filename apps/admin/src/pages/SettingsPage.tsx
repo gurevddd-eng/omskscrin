@@ -26,6 +26,10 @@ export function SettingsPage() {
   const [tab, setTab] = useState<Tab>("behavior");
   const [blockKeyboard, setBlockKeyboard] = useState(true);
   const [softwareEnabled, setSoftwareEnabled] = useState(true);
+  const [themeMode, setThemeMode] = useState<"manual" | "light" | "dark" | "schedule">("manual");
+  const [themeDarkFrom, setThemeDarkFrom] = useState("20:00");
+  const [themeDarkTo, setThemeDarkTo] = useState("08:00");
+  const [themeNow, setThemeNow] = useState<"light" | "dark" | null>(null);
   const [settingsVersion, setSettingsVersion] = useState("—");
   const [serverPublicUrl, setServerPublicUrl] = useState("");
   const [defaultHealthPort, setDefaultHealthPort] = useState(47821);
@@ -73,6 +77,10 @@ export function SettingsPage() {
     ]);
     setBlockKeyboard(data.blockKeyboard);
     setSoftwareEnabled(data.softwareEnabled);
+    setThemeMode(data.themeMode || "manual");
+    setThemeDarkFrom(data.themeDarkFrom || "20:00");
+    setThemeDarkTo(data.themeDarkTo || "08:00");
+    setThemeNow(data.theme ?? null);
     setSettingsVersion(data.settingsVersion);
     setServerPublicUrl(data.network.serverPublicUrl);
     setEffectiveServerUrl(data.network.effectiveServerPublicUrl);
@@ -109,10 +117,14 @@ export function SettingsPage() {
     try {
       const saved = await api<SiteSettingsDto>("/api/settings", {
         method: "PUT",
-        json: { blockKeyboard, softwareEnabled },
+        json: { blockKeyboard, softwareEnabled, themeMode, themeDarkFrom, themeDarkTo },
       });
       setBlockKeyboard(saved.blockKeyboard);
       setSoftwareEnabled(saved.softwareEnabled);
+      setThemeMode(saved.themeMode || "manual");
+      setThemeDarkFrom(saved.themeDarkFrom || "20:00");
+      setThemeDarkTo(saved.themeDarkTo || "08:00");
+      setThemeNow(saved.theme ?? null);
       setSettingsVersion(saved.settingsVersion);
       setDirty(false);
 
@@ -309,6 +321,68 @@ export function SettingsPage() {
                 <span className="settings-switch__ui" aria-hidden />
                 <span className="settings-switch__label">{blockKeyboard ? "Вкл" : "Выкл"}</span>
               </label>
+            </div>
+
+            <div className="cx-setting cx-setting--stack">
+              <div>
+                <p className="cx-setting__title">Тема на киосках</p>
+                <p className="cx-setting__hint">
+                  Расписание по времени сервера (сейчас:{" "}
+                  {themeMode === "manual"
+                    ? "на киоске вручную"
+                    : themeNow === "dark"
+                      ? "тёмная"
+                      : themeNow === "light"
+                        ? "светлая"
+                        : "—"}
+                  ). При режиме «По расписанию» переключатель на киоске скрыт.
+                </p>
+              </div>
+              <div className="settings-theme">
+                <label>
+                  Режим
+                  <select
+                    value={themeMode}
+                    disabled={!canEdit || busy}
+                    onChange={(e) => {
+                      setThemeMode(e.target.value as typeof themeMode);
+                      setDirty(true);
+                      setSavedHint("");
+                    }}
+                  >
+                    <option value="manual">Вручную на киоске</option>
+                    <option value="light">Всегда светлая</option>
+                    <option value="dark">Всегда тёмная</option>
+                    <option value="schedule">По расписанию</option>
+                  </select>
+                </label>
+                <label>
+                  Тёмная с
+                  <input
+                    type="time"
+                    value={themeDarkFrom}
+                    disabled={!canEdit || busy || themeMode !== "schedule"}
+                    onChange={(e) => {
+                      setThemeDarkFrom(e.target.value || "20:00");
+                      setDirty(true);
+                      setSavedHint("");
+                    }}
+                  />
+                </label>
+                <label>
+                  до
+                  <input
+                    type="time"
+                    value={themeDarkTo}
+                    disabled={!canEdit || busy || themeMode !== "schedule"}
+                    onChange={(e) => {
+                      setThemeDarkTo(e.target.value || "08:00");
+                      setDirty(true);
+                      setSavedHint("");
+                    }}
+                  />
+                </label>
+              </div>
             </div>
           </form>
         </Card>

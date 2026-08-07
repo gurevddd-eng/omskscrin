@@ -501,9 +501,10 @@ export async function sendHeartbeat(
     syncStatus: SyncStatus;
     syncMessage: string | null;
   }
-) {
+): Promise<{ syncFingerprint?: string } | null> {
+  let remote: { syncFingerprint?: string } | null = null;
   try {
-    await fetch(`${config.serverUrl}/api/kiosks/${config.kioskId}/heartbeat`, {
+    const res = await fetch(`${config.serverUrl}/api/kiosks/${config.kioskId}/heartbeat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -512,6 +513,9 @@ export async function sendHeartbeat(
         hostname: config.hostname,
       }),
     });
+    if (res.ok) {
+      remote = (await res.json()) as { syncFingerprint?: string };
+    }
   } catch {
     /* offline */
   }
@@ -525,6 +529,8 @@ export async function sendHeartbeat(
   } catch {
     /* agent may be off */
   }
+
+  return remote;
 }
 
 /** Local blob URL only — no live network streaming. */

@@ -63,12 +63,15 @@ type KioskDetailProps = {
   savingNetwork: boolean;
   pushingConfig: boolean;
   clearingPolicies: boolean;
+  updatingSoftware: boolean;
+  targetSoftwareVersion: string | null;
   onBind: (id: string, exhibitId: string) => void;
   onProbe: (id: string) => void;
   onInstall: (id: string) => void;
   onCancel: (id: string) => void;
   onStart: (id: string) => void;
   onStop: (id: string) => void;
+  onSoftwareUpdate: (id: string) => void;
   onRemoveFromAdmin: (id: string) => void;
   onRemoveFull: (id: string) => void;
   onSaveNetwork: (id: string, data: { healthPort: number; uiPort: number; serverUrl: string }) => void;
@@ -83,7 +86,18 @@ function KioskDetailPanel(props: KioskDetailProps) {
   const busyUiStart = k.uiStartStatus === "running";
   const busyUiStop = k.uiStopStatus === "running";
   const locked =
-    props.installing || props.starting || props.stopping || busyPolicyClear || busyUiStart || busyUiStop;
+    props.installing ||
+    props.starting ||
+    props.stopping ||
+    props.updatingSoftware ||
+    busyPolicyClear ||
+    busyUiStart ||
+    busyUiStop;
+
+  const swLocal = k.softwareVersion || null;
+  const swTarget = props.targetSoftwareVersion;
+  const swOutdated = Boolean(swTarget && swLocal && swLocal !== swTarget);
+  const swUnknown = Boolean(swTarget && !swLocal);
 
   const [healthPort, setHealthPort] = useState(String(k.healthPort));
   const [uiPort, setUiPort] = useState(String(k.uiPort));
@@ -129,6 +143,21 @@ function KioskDetailPanel(props: KioskDetailProps) {
                 <button type="button" className="btn ghost" disabled={locked} onClick={() => props.onStop(k.id)}>
                   {props.stopping || busyUiStop ? "Стоп…" : "Стоп"}
                 </button>
+                <button
+                  type="button"
+                  className="btn secondary"
+                  disabled={locked || !props.deployReady}
+                  title={
+                    !props.deployReady
+                      ? "Нет update.zip на сервере"
+                      : swOutdated
+                        ? `Локально ${swLocal} → цель ${swTarget}`
+                        : "Отправить OTA-обновление ПО на этот киоск"
+                  }
+                  onClick={() => props.onSoftwareUpdate(k.id)}
+                >
+                  {props.updatingSoftware ? "…" : "Обновить ПО"}
+                </button>
               </>
             )}
             <button type="button" className="btn ghost" disabled={props.probing} onClick={() => props.onProbe(k.id)}>
@@ -150,7 +179,20 @@ function KioskDetailPanel(props: KioskDetailProps) {
             <dd>{formatSeen(k.lastSeenAt)}</dd>
           </div>
           <div className="kx-meta__cell">
-            <dt>Версия софта</dt>
+            <dt>Версия ПО (OTA)</dt>
+            <dd className={swOutdated || swUnknown ? "bad" : undefined}>
+              {swLocal || "—"}
+              {swTarget ? (
+                <span className="muted">
+                  {" "}
+                  → цель {swTarget}
+                  {swOutdated ? " · нужна" : swLocal === swTarget ? " · актуальна" : ""}
+                </span>
+              ) : null}
+            </dd>
+          </div>
+          <div className="kx-meta__cell">
+            <dt>appVersion</dt>
             <dd>{k.appVersion || "—"}</dd>
           </div>
           <div className="kx-meta__cell">
@@ -269,14 +311,14 @@ function KioskDetailPanel(props: KioskDetailProps) {
               </div>
             </section>
 
-            <section className="kx-section kx-danger">
+            <section className="kx-section kx-remove">
               <h3 className="kx-section__head">Удаление</h3>
-              <div className="kx-section__body">
-                <p className="muted kx-danger__hint">
-                  «Из списка» — только запись в админке (ПК не трогаем). «С Windows-ПК» — снимает софт и удаляет
-                  запись.
-                </p>
-                <div className="kx-section__body--row">
+              <div className="kx-remove__list">
+                <div className="kx-remove__item">
+                  <div className="kx-remove__text">
+                    <strong>Только из админки</strong>
+                    <span>Запись пропадёт из списка. Софт и политики на Windows-ПК не трогаем.</span>
+                  </div>
                   <button
                     type="button"
                     className="btn secondary"
@@ -285,13 +327,19 @@ function KioskDetailPanel(props: KioskDetailProps) {
                   >
                     Убрать из списка
                   </button>
+                </div>
+                <div className="kx-remove__item kx-remove__item--danger">
+                  <div className="kx-remove__text">
+                    <strong>С Windows-ПК</strong>
+                    <span>Снимает Омскэкран с компьютера и удаляет запись из админки.</span>
+                  </div>
                   <button
                     type="button"
                     className="btn danger"
                     disabled={locked}
                     onClick={() => props.onRemoveFull(k.id)}
                   >
-                    Удалить с Windows-ПК
+                    Удалить с ПК
                   </button>
                 </div>
               </div>
@@ -329,6 +377,9 @@ export function KiosksPage() {
   const [savingNetwork, setSavingNetwork] = useState<string | null>(null);
   const [pushingConfig, setPushingConfig] = useState<string | null>(null);
   const [clearingPolicies, setClearingPolicies] = useState<string | null>(null);
+  const [updatingSoftware, setUpdatingSoftware] = useState<string | null>(null);
+  const [bulkUpdating, setBulkUpdating] = useState(false);
+  const [checkedIds, setCheckedIds] = useState<Set<string>>(() => new Set());
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [filter, setFilter] = useState<FilterTab>("all");
   const [search, setSearch] = useState("");
@@ -727,6 +778,113 @@ export function KiosksPage() {
     }
   }
 
+  function toggleChecked(id: string, on: boolean) {
+    setCheckedIds((prev) => {
+      const next = new Set(prev);
+      if (on) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  }
+
+  function toggleCheckAllFiltered(on: boolean) {
+    setCheckedIds((prev) => {
+      const next = new Set(prev);
+      for (const k of filtered) {
+        if (on) next.add(k.id);
+        else next.delete(k.id);
+      }
+      return next;
+    });
+  }
+
+  async function softwareUpdateOne(id: string) {
+    const k = kiosks.find((x) => x.id === id);
+    const target = deploy?.softwareVersion || "пакет";
+    const ok = await confirmDialog({
+      title: "Обновить ПО на киоске?",
+      message: `Отправить OTA «${k?.name || k?.hostname || id}» → ${target}.`,
+      details:
+        "Агент скачает update.zip с сервера. Если WinRM недоступен — киоск подхватит обновление по heartbeat (~30 с).",
+      confirmLabel: "Обновить ПО",
+      tone: "warn",
+    });
+    if (!ok) return;
+    setUpdatingSoftware(id);
+    setError("");
+    try {
+      const res = await api<{
+        ok: boolean;
+        mode: string;
+        message: string;
+        targetSoftwareVersion: string | null;
+      }>(`/api/kiosks/${id}/software-update`, { method: "POST" });
+      setSelectedId(id);
+      setOkHint(
+        res.message ||
+          `OTA запущена → ${res.targetSoftwareVersion || target}. Версия в карточке обновится после применения (~30–60 с).`
+      );
+      await load(id);
+      // Heartbeat may still show old softwareVersion for a bit — re-poll.
+      for (const delayMs of [5_000, 15_000, 35_000]) {
+        window.setTimeout(() => {
+          void api(`/api/kiosks/${id}/probe`, { method: "POST" })
+            .catch(() => null)
+            .then(() => load(id));
+        }, delayMs);
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Не удалось отправить обновление");
+    } finally {
+      setUpdatingSoftware(null);
+    }
+  }
+
+  async function softwareUpdateBulk(mode: "selected" | "online") {
+    const ids =
+      mode === "selected"
+        ? [...checkedIds]
+        : kiosks.filter((k) => k.online).map((k) => k.id);
+    if (!ids.length) {
+      setError(mode === "selected" ? "Отметьте киоски слева" : "Нет онлайн-киосков");
+      return;
+    }
+    const target = deploy?.softwareVersion || "пакет";
+    const ok = await confirmDialog({
+      title: mode === "selected" ? "Обновить выбранные?" : "Обновить все онлайн?",
+      message: `OTA на ${ids.length} киоск(ов) → ${target}.`,
+      details: "Сервер пометит киоски на принудительное обновление; агент скачает update.zip.",
+      confirmLabel: "Обновить ПО",
+      tone: "warn",
+    });
+    if (!ok) return;
+    setBulkUpdating(true);
+    setError("");
+    try {
+      const res = await api<{
+        targetSoftwareVersion: string | null;
+        results: Array<{ hostname: string; ok: boolean; mode: string; message: string }>;
+      }>("/api/kiosks/software-update", {
+        method: "POST",
+        json: { ids },
+      });
+      const okN = res.results.filter((r) => r.ok).length;
+      const fails = res.results.filter((r) => !r.ok);
+      setOkHint(
+        `ПО → ${res.targetSoftwareVersion || target}: ${okN}/${res.results.length}` +
+          (fails.length
+            ? ` · ошибки: ${fails.map((f) => `${f.hostname} (${f.message})`).join("; ")}`
+            : "")
+      );
+      if (mode === "selected") setCheckedIds(new Set());
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Массовое обновление не удалось");
+    } finally {
+      setBulkUpdating(false);
+    }
+  }
+
   function nextSelectedAfterDelete(removedId: string, list: KioskDto[]) {
     const idx = list.findIndex((k) => k.id === removedId);
     if (idx === -1) return list[0]?.id ?? null;
@@ -817,9 +975,27 @@ export function KiosksPage() {
             {probingAll ? "…" : "Опросить все"}
           </button>
           {canEdit && (
-            <button type="button" className="btn danger" disabled={rollingBack} onClick={() => void rollbackAll()}>
-              {rollingBack ? "Откат…" : "Откатить все"}
-            </button>
+            <>
+              <button
+                type="button"
+                className="btn secondary"
+                disabled={bulkUpdating || !deploy?.packageReady || !checkedIds.size}
+                onClick={() => void softwareUpdateBulk("selected")}
+              >
+                {bulkUpdating ? "…" : `Обновить ПО (${checkedIds.size || "выбор"})`}
+              </button>
+              <button
+                type="button"
+                className="btn secondary"
+                disabled={bulkUpdating || !deploy?.packageReady || !stats.online}
+                onClick={() => void softwareUpdateBulk("online")}
+              >
+                {bulkUpdating ? "…" : "Обновить ПО (онлайн)"}
+              </button>
+              <button type="button" className="btn danger" disabled={rollingBack} onClick={() => void rollbackAll()}>
+                {rollingBack ? "Откат…" : "Откатить все"}
+              </button>
+            </>
           )}
         </>
       }
@@ -946,33 +1122,69 @@ export function KiosksPage() {
           </div>
 
           <div className="kx-items">
+            {canEdit && filtered.length ? (
+              <label className="kx-select-all checkbox-label">
+                <input
+                  type="checkbox"
+                  checked={filtered.every((k) => checkedIds.has(k.id))}
+                  onChange={(e) => toggleCheckAllFiltered(e.target.checked)}
+                />
+                Выбрать все в списке ({filtered.length})
+              </label>
+            ) : null}
             {filtered.map((k) => {
               const busy = kioskBusyLabel(k);
+              const outdated =
+                deploy?.softwareVersion &&
+                k.softwareVersion &&
+                k.softwareVersion !== deploy.softwareVersion;
               return (
-                <button
+                <div
                   key={k.id}
-                  type="button"
                   className={`kx-item ${selectedId === k.id ? "is-selected" : ""} ${busy ? "is-busy" : ""}`}
-                  onClick={() => setSelectedId(k.id)}
                 >
-                  <div className="kx-item__row">
-                    <div>
-                      <span className="kx-item__name">{k.name}</span>
-                      <span className="kx-item__host">{k.hostname}</span>
+                  {canEdit ? (
+                    <input
+                      type="checkbox"
+                      className="kx-item__check"
+                      checked={checkedIds.has(k.id)}
+                      aria-label={`Выбрать ${k.name}`}
+                      onChange={(e) => toggleChecked(k.id, e.target.checked)}
+                    />
+                  ) : null}
+                  <button type="button" className="kx-item__btn" onClick={() => setSelectedId(k.id)}>
+                    <div className="kx-item__row">
+                      <div>
+                        <span className="kx-item__name">{k.name}</span>
+                        <span className="kx-item__host">{k.hostname}</span>
+                      </div>
+                      <span className={`kx-item__dot ${kioskDotClass(k)}`} title={PROBE_STATUS_LABEL[k.probeStatus]} />
                     </div>
-                    <span className={`kx-item__dot ${kioskDotClass(k)}`} title={PROBE_STATUS_LABEL[k.probeStatus]} />
-                  </div>
-                  <div className="kx-item__foot">
-                    <span className={`kx-item__tag ${k.online ? "is-live" : ""}`}>
-                      {k.online ? "онлайн" : "офлайн"}
-                    </span>
-                    <span className={`kx-item__tag ${k.probeStatus === "healthy" ? "is-live" : k.probeStatus === "unreachable" || k.probeStatus === "no_software" ? "is-bad" : ""}`}>
-                      {PROBE_STATUS_LABEL[k.probeStatus]}
-                    </span>
-                    {busy ? <span className="kx-item__tag is-busy">{busy}</span> : null}
-                    {k.exhibitTitle ? <span className="kx-item__tag">{k.exhibitTitle}</span> : null}
-                  </div>
-                </button>
+                    <div className="kx-item__foot">
+                      <span className={`kx-item__tag ${k.online ? "is-live" : ""}`}>
+                        {k.online ? "онлайн" : "офлайн"}
+                      </span>
+                      <span
+                        className={`kx-item__tag ${
+                          k.probeStatus === "healthy"
+                            ? "is-live"
+                            : k.probeStatus === "unreachable" || k.probeStatus === "no_software"
+                              ? "is-bad"
+                              : ""
+                        }`}
+                      >
+                        {PROBE_STATUS_LABEL[k.probeStatus]}
+                      </span>
+                      {k.softwareVersion ? (
+                        <span className={`kx-item__tag ${outdated ? "is-bad" : ""}`} title="Версия ПО (OTA)">
+                          {k.softwareVersion}
+                        </span>
+                      ) : null}
+                      {busy ? <span className="kx-item__tag is-busy">{busy}</span> : null}
+                      {k.exhibitTitle ? <span className="kx-item__tag">{k.exhibitTitle}</span> : null}
+                    </div>
+                  </button>
+                </div>
               );
             })}
             {!filtered.length ? (
@@ -1000,12 +1212,15 @@ export function KiosksPage() {
             savingNetwork={savingNetwork === selected.id}
             pushingConfig={pushingConfig === selected.id}
             clearingPolicies={clearingPolicies === selected.id}
+            updatingSoftware={updatingSoftware === selected.id}
+            targetSoftwareVersion={deploy?.softwareVersion ?? null}
             onBind={bind}
             onProbe={probe}
             onInstall={install}
             onCancel={cancelInstall}
             onStart={startKiosk}
             onStop={stopKiosk}
+            onSoftwareUpdate={softwareUpdateOne}
             onRemoveFromAdmin={removeFromAdmin}
             onRemoveFull={removeFull}
             onSaveNetwork={saveNetwork}

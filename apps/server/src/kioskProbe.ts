@@ -24,6 +24,7 @@ export function mapKiosk(k: {
   syncStatus: SyncStatus;
   syncMessage: string | null;
   appVersion: string | null;
+  softwareVersion?: string | null;
   probeStatus: ProbeStatus;
   probeMessage: string | null;
   lastProbeAt: Date | null;
@@ -49,6 +50,7 @@ export function mapKiosk(k: {
     syncStatus: k.syncStatus,
     syncMessage: k.syncMessage,
     appVersion: k.appVersion,
+    softwareVersion: k.softwareVersion ?? null,
     probeStatus: k.probeStatus,
     probeMessage: k.probeMessage,
     lastProbeAt: k.lastProbeAt?.toISOString() ?? null,
@@ -90,6 +92,7 @@ type HealthPayload = {
   kioskId?: string;
   hostname?: string;
   appVersion?: string;
+  softwareVersion?: string;
   contentVersion?: string | null;
   syncStatus?: SyncStatus;
 };
@@ -161,6 +164,7 @@ export async function probeKioskById(id: string) {
       probeMessage,
       lastProbeAt: new Date(),
       appVersion: health?.appVersion || undefined,
+      softwareVersion: health?.softwareVersion || undefined,
     },
     include: { exhibit: { select: { title: true } } },
   });

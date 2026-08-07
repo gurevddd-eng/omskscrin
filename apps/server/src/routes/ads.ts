@@ -5,6 +5,12 @@ import { prisma } from "../prisma.js";
 import { authenticate, requireRoles } from "../auth.js";
 import { toFileDto } from "./files.js";
 import { ensureSiteSettings } from "./settings.js";
+import {
+  normalizeHhMm,
+  parseThemeMode,
+  resolveEffectiveTheme,
+} from "../themeSchedule.js";
+import { broadcastContentSync } from "../contentHub.js";
 
 const putSchema = z.object({
   adIds: z.array(z.string()),
@@ -24,6 +30,9 @@ export async function getGlobalAdsState() {
       include: { file: true },
     }),
   ]);
+  const themeMode = parseThemeMode(settings.themeMode);
+  const themeDarkFrom = normalizeHhMm(settings.themeDarkFrom, "20:00");
+  const themeDarkTo = normalizeHhMm(settings.themeDarkTo, "08:00");
   return {
     adIds: ads.map((a) => a.fileId),
     ads: ads.map((a) => toFileDto(a.file)),
@@ -31,6 +40,14 @@ export async function getGlobalAdsState() {
     settingsVersion: settings.settingsVersion,
     blockKeyboard: settings.blockKeyboard,
     softwareEnabled: settings.softwareEnabled,
+    themeMode,
+    themeDarkFrom,
+    themeDarkTo,
+    theme: resolveEffectiveTheme({
+      mode: themeMode,
+      darkFrom: themeDarkFrom,
+      darkTo: themeDarkTo,
+    }),
     updatedAt: settings.updatedAt.toISOString(),
     files: ads.map((a) => a.file),
   };
@@ -67,6 +84,7 @@ export async function registerAdsRoutes(app: FastifyInstance) {
     });
 
     const state = await getGlobalAdsState();
+    broadcastContentSync({ reason: "ads" });
     return {
       adIds: state.adIds,
       ads: state.ads,

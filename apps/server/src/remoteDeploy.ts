@@ -13,6 +13,7 @@ export type DeployScriptName =
   | "remote-uninstall"
   | "remote-clear-policies"
   | "remote-push-config"
+  | "remote-force-update"
   | "remote-test-connection";
 
 export type DeployTransportKind = "winrm" | "ssh";

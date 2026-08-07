@@ -24,7 +24,7 @@ export async function api<T>(
   const res = await fetch(path, { ...options, headers, body });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(err.error || "Request failed");
+    throw new Error(err.error || err.message || "Request failed");
   }
   if (res.status === 204) return undefined as T;
   return res.json();

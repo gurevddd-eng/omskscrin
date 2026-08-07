@@ -17,10 +17,23 @@ import {
   loadNetworkRuntimeFromDb,
   parseCorsOrigins,
 } from "../networkSettings.js";
+import {
+  normalizeHhMm,
+  parseThemeMode,
+  resolveEffectiveTheme,
+} from "../themeSchedule.js";
+import { broadcastContentSync } from "../contentHub.js";
+
+const hhmm = z
+  .string()
+  .regex(/^([01]?\d|2[0-3]):([0-5]\d)$/, "Ожидается время HH:mm");
 
 const putSchema = z.object({
   blockKeyboard: z.boolean(),
   softwareEnabled: z.boolean(),
+  themeMode: z.enum(["manual", "light", "dark", "schedule"]),
+  themeDarkFrom: hhmm,
+  themeDarkTo: hhmm,
 });
 
 const networkPutSchema = z.object({
@@ -51,9 +64,20 @@ export { ensureSiteSettings } from "../siteSettings.js";
 export async function getSiteSettingsDto() {
   const s = await ensureSiteSettings();
   const network = await getSiteNetworkSettings();
+  const themeMode = parseThemeMode(s.themeMode);
+  const themeDarkFrom = normalizeHhMm(s.themeDarkFrom, "20:00");
+  const themeDarkTo = normalizeHhMm(s.themeDarkTo, "08:00");
   return {
     blockKeyboard: s.blockKeyboard,
     softwareEnabled: s.softwareEnabled,
+    themeMode,
+    themeDarkFrom,
+    themeDarkTo,
+    theme: resolveEffectiveTheme({
+      mode: themeMode,
+      darkFrom: themeDarkFrom,
+      darkTo: themeDarkTo,
+    }),
     settingsVersion: s.settingsVersion,
     adsVersion: s.adsVersion,
     updatedAt: s.updatedAt.toISOString(),
@@ -119,10 +143,15 @@ export async function registerSettingsRoutes(app: FastifyInstance) {
       data: {
         blockKeyboard: body.blockKeyboard,
         softwareEnabled: body.softwareEnabled,
+        themeMode: body.themeMode,
+        themeDarkFrom: normalizeHhMm(body.themeDarkFrom, "20:00"),
+        themeDarkTo: normalizeHhMm(body.themeDarkTo, "08:00"),
         settingsVersion: bumpVersion(current.settingsVersion),
       },
     });
-    return getSiteSettingsDto();
+    const dto = await getSiteSettingsDto();
+    broadcastContentSync({ reason: "settings" });
+    return dto;
   });
 
   app.put("/api/settings/network", { preHandler: requireRoles("admin", "editor") }, async (request) => {
@@ -154,7 +183,9 @@ export async function registerSettingsRoutes(app: FastifyInstance) {
 
     await prisma.siteSettings.update({ where: { id: "default" }, data });
     await loadNetworkRuntimeFromDb();
-    return getSiteSettingsDto();
+    const dto = await getSiteSettingsDto();
+    broadcastContentSync({ reason: "settings-network" });
+    return dto;
   });
 
   app.get("/api/settings/deploy", { preHandler: requireRoles("admin") }, async () => {
@@ -178,7 +209,6 @@ export async function registerSettingsRoutes(app: FastifyInstance) {
     if (body.deployPassword !== undefined && body.deployPassword !== null) {
       data.deployPassword = body.deployPassword;
     } else {
-      // keep existing
       data.deployPassword = current.deployPassword;
     }
     await prisma.siteSettings.update({ where: { id: "default" }, data });

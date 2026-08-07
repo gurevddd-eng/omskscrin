@@ -74,6 +74,29 @@ let softwareVersion = readLocalSoftwareVersion();
 let updateInProgress = false;
 let updateFailCount = 0;
 let nextUpdateAllowedAt = 0;
+const forceUpdatePath = path.join(
+  process.env.ProgramData || "C:\\ProgramData",
+  "StellaKiosk",
+  "FORCE_UPDATE"
+);
+
+function readForceUpdateFlag() {
+  try {
+    if (!fs.existsSync(forceUpdatePath)) return null;
+    const v = fs.readFileSync(forceUpdatePath, "utf8").trim();
+    return v || null;
+  } catch {
+    return null;
+  }
+}
+
+function clearForceUpdateFlag() {
+  try {
+    if (fs.existsSync(forceUpdatePath)) fs.unlinkSync(forceUpdatePath);
+  } catch {
+    /* ignore */
+  }
+}
 
 let live = {
   contentVersion: null,
@@ -237,12 +260,15 @@ const serverUrl = String(fileCfg.serverUrl || "")
   .replace(/\/$/, "");
 const heartbeatSec = Math.max(15, Number(fileCfg.heartbeatIntervalSec || 30));
 const syncIntervalSec = Math.max(30, Number(fileCfg.syncIntervalSec || 300));
-const softwareCheckSec = Math.max(60, Number(fileCfg.softwareCheckIntervalSec || syncIntervalSec));
+const softwareCheckSec = Math.max(
+  20,
+  Number(fileCfg.softwareCheckIntervalSec || 30)
+);
 
 async function pushHeartbeat() {
   if (!serverUrl) return;
   try {
-    await fetch(`${serverUrl}/api/kiosks/${encodeURIComponent(kioskId)}/heartbeat`, {
+    const res = await fetch(`${serverUrl}/api/kiosks/${encodeURIComponent(kioskId)}/heartbeat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -250,9 +276,28 @@ async function pushHeartbeat() {
         syncStatus: live.syncStatus,
         syncMessage: live.syncMessage,
         appVersion,
+        softwareVersion,
         hostname,
       }),
     });
+    if (!res.ok) return;
+    try {
+      const data = await res.json();
+      const target = String(data.targetSoftwareVersion || "").trim();
+      if (
+        data.updateAvailable &&
+        target &&
+        !updateInProgress &&
+        (target !== softwareVersion || data.forceUpdate)
+      ) {
+        // Outdated or admin-forced: bypass backoff so "Обновить ПО" / drift always retry.
+        void applySoftwareUpdate(target, {
+          force: Boolean(data.forceUpdate) || target !== softwareVersion,
+        });
+      }
+    } catch {
+      /* ignore body parse */
+    }
   } catch (e) {
     console.warn("[stella-agent] heartbeat failed:", e instanceof Error ? e.message : e);
   }
@@ -316,14 +361,25 @@ async function downloadUpdateZip(url, dest) {
   fs.writeFileSync(dest, buf);
 }
 
-async function applySoftwareUpdate(remoteVersion) {
+async function applySoftwareUpdate(remoteVersion, opts = {}) {
+  const force = Boolean(opts.force);
   if (!serverUrl || updateInProgress) return;
-  if (Date.now() < nextUpdateAllowedAt) {
+  if (!force && Date.now() < nextUpdateAllowedAt) {
     console.warn("[stella-agent] update skipped (backoff)");
     return;
   }
+  // Admin left FORCE_UPDATE but files already match — clear flag, don't loop OTA.
+  if (force && remoteVersion && remoteVersion === softwareVersion) {
+    clearForceUpdateFlag();
+    console.log(`[stella-agent] FORCE_UPDATE cleared (already on ${softwareVersion})`);
+    return;
+  }
+  if (force) nextUpdateAllowedAt = 0;
   updateInProgress = true;
-  console.log(`[stella-agent] software update ${softwareVersion} → ${remoteVersion}`);
+  console.log(
+    `[stella-agent] software update ${softwareVersion} → ${remoteVersion}` +
+      (force ? " (forced)" : "")
+  );
 
   const stamp = Date.now();
   const zipPath = path.join(os.tmpdir(), `stella-upd-${stamp}.zip`);
@@ -348,11 +404,23 @@ async function applySoftwareUpdate(remoteVersion) {
       copyRecursive(uiSrc, path.join(root, "ui"));
     }
 
-    for (const name of ["version.json", "VERSION", "install-local.ps1"]) {
+    for (const name of [
+      "version.json",
+      "VERSION",
+      "install-local.ps1",
+      "block-hotkeys.ps1",
+      "lockdown-policies.ps1",
+      "clear-policies.ps1",
+    ]) {
       const src = path.join(payload, name);
       if (fs.existsSync(src)) {
         fs.copyFileSync(src, path.join(root, name));
       }
+    }
+
+    const gamesSrc = path.join(payload, "games");
+    if (fs.existsSync(gamesSrc)) {
+      copyRecursive(gamesSrc, path.join(root, "games"));
     }
 
     const agentSrc = path.join(payload, "agent.mjs");
@@ -370,19 +438,34 @@ async function applySoftwareUpdate(remoteVersion) {
     softwareVersion = readLocalSoftwareVersion() || remoteVersion;
     updateFailCount = 0;
     nextUpdateAllowedAt = 0;
+    clearForceUpdateFlag();
     console.log(
       `[stella-agent] software update applied: ${softwareVersion}` +
         (agentChanged ? " (agent changed → restart)" : " (UI only, no restart)")
     );
 
     if (agentChanged) {
+      // Next agent boot should hard-restart Edge (new watchdog kills then launches)
+      try {
+        fs.writeFileSync(path.join(root, "LAUNCH_UI"), String(Date.now()), "utf8");
+      } catch {
+        /* ignore */
+      }
       scheduleAgentRestart();
       return;
     }
+    // UI-only OTA: hard-restart Edge so visitors see new assets immediately
+    console.log("[stella-agent] restarting Edge UI after software update");
+    try {
+      fs.writeFileSync(path.join(root, "LAUNCH_UI"), String(Date.now()), "utf8");
+    } catch {
+      /* ignore */
+    }
+    relaunchEdgeUi();
     updateInProgress = false;
   } catch (e) {
     updateFailCount += 1;
-    const backoffMs = Math.min(60 * 60 * 1000, 60_000 * Math.pow(2, Math.min(updateFailCount, 5)));
+    const backoffMs = Math.min(10 * 60 * 1000, 30_000 * Math.pow(2, Math.min(updateFailCount, 4)));
     nextUpdateAllowedAt = Date.now() + backoffMs;
     console.warn(
       "[stella-agent] software update failed:",
@@ -406,13 +489,23 @@ async function applySoftwareUpdate(remoteVersion) {
 
 async function checkSoftwareUpdate() {
   if (!serverUrl || updateInProgress) return;
-  if (Date.now() < nextUpdateAllowedAt) return;
+  const forcedLocal = readForceUpdateFlag();
+  if (forcedLocal) {
+    // Always apply when admin forced — even if version stamp already matches
+    await applySoftwareUpdate(forcedLocal, { force: true });
+    return;
+  }
+  // Do not bail on backoff before talking to the server — forceUpdate / new
+  // target must still be visible; backoff only skips the actual apply.
   try {
     const res = await fetch(
       `${serverUrl}/api/kiosks/${encodeURIComponent(kioskId)}/updates?softwareVersion=${encodeURIComponent(softwareVersion)}`,
       { cache: "no-store" }
     );
-    if (!res.ok) return;
+    if (!res.ok) {
+      console.warn(`[stella-agent] update check HTTP ${res.status}`);
+      return;
+    }
     const data = await res.json();
     if (typeof data.blockKeyboard === "boolean") {
       applyBlockKeyboardSetting(data.blockKeyboard);
@@ -421,11 +514,27 @@ async function checkSoftwareUpdate() {
       applySoftwareEnabledSetting(data.softwareEnabled);
     }
     const remote = String(data.softwareVersion || "").trim();
-    if (!remote || remote === softwareVersion) return;
-    await applySoftwareUpdate(remote);
+    if (!remote) return;
+    if (remote === softwareVersion && !data.forceUpdate) return;
+    if (data.updateAvailable === false && !data.forceUpdate) {
+      console.warn(
+        `[stella-agent] remote software ${remote} differs but update zip missing on server`
+      );
+      return;
+    }
+    await applySoftwareUpdate(remote, { force: Boolean(data.forceUpdate) });
   } catch (e) {
     console.warn("[stella-agent] update check failed:", e instanceof Error ? e.message : e);
   }
+}
+
+function watchForceUpdateFlag() {
+  setInterval(() => {
+    if (!serverUrl || updateInProgress) return;
+    const target = readForceUpdateFlag();
+    if (!target) return;
+    void applySoftwareUpdate(target, { force: true });
+  }, 1_000);
 }
 
 if (serverUrl) {
@@ -433,8 +542,22 @@ if (serverUrl) {
   console.log(`[stella-agent] software/settings check every ${softwareCheckSec}s (local=${softwareVersion})`);
   void pushHeartbeat();
   setInterval(() => void pushHeartbeat(), heartbeatSec * 1000);
-  // Delay first OTA check so UI stays up after boot; also applies remote settings
-  setTimeout(() => void checkSoftwareUpdate(), 15_000);
+  watchForceUpdateFlag();
+  // If admin already left FORCE_UPDATE, apply immediately (no stagger)
+  if (readForceUpdateFlag()) {
+    console.log("[stella-agent] FORCE_UPDATE present at start — applying now");
+    void checkSoftwareUpdate();
+  } else {
+    let stagger = 3_000;
+    try {
+      const h = createHash("sha1").update(String(kioskId)).digest();
+      stagger = 3_000 + (h.readUInt16BE(0) % 12_000);
+    } catch {
+      stagger = 4_000 + Math.floor(Math.random() * 8_000);
+    }
+    console.log(`[stella-agent] first OTA check in ${Math.round(stagger / 1000)}s`);
+    setTimeout(() => void checkSoftwareUpdate(), stagger);
+  }
   setInterval(() => void checkSoftwareUpdate(), softwareCheckSec * 1000);
 } else {
   console.warn("[stella-agent] no serverUrl in kiosk.json — heartbeat/updates disabled");
@@ -557,16 +680,22 @@ function isStopRequested() {
 
 function killEdgeUi() {
   const marker = `127.0.0.1:${uiPort}`;
-  const script = `
-Get-CimInstance Win32_Process -Filter "Name = 'msedge.exe'" -ErrorAction SilentlyContinue | ForEach-Object {
-  if ($_.CommandLine -and $_.CommandLine -like '*${marker}*') {
-    try { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } catch {}
+  try {
+    execFileSync(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        `Get-CimInstance Win32_Process -Filter "Name = 'msedge.exe'" -ErrorAction SilentlyContinue | ForEach-Object { if ($_.CommandLine -and $_.CommandLine -like '*${marker}*') { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } catch {} } }; Start-Sleep -Milliseconds 400`,
+      ],
+      { windowsHide: true, timeout: 15000 }
+    );
+  } catch {
+    /* best effort */
   }
-}
-`;
-  spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script], {
-    windowsHide: true,
-  });
 }
 
 function applySoftwareEnabledSetting(enabled) {
@@ -616,6 +745,8 @@ function relaunchEdgeUi() {
     console.warn("[stella-agent] Edge not found — cannot relaunch UI");
     return;
   }
+  // Always close existing kiosk Edge first — IgnoreNew previously left stale UI on screen after OTA
+  killEdgeUi();
   const args = edgeUiArgs();
   // Must run on the interactive desktop of the logged-on user (SYSTEM Session 0 is invisible).
   const script = `
@@ -638,7 +769,7 @@ if (-not $owner -or [string]::IsNullOrWhiteSpace($owner.User)) {
 $user = if ($owner.Domain) { "$($owner.Domain)\\$($owner.User)" } else { $owner.User }
 
 $action = New-ScheduledTaskAction -Execute $edge -Argument $uiArgs
-$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances Parallel
 $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Highest
 
 # Keep AtLogOn task updated for next reboot
@@ -890,7 +1021,7 @@ if (-not $owner -or [string]::IsNullOrWhiteSpace($owner.User)) { Write-Output 'n
 $user = if ($owner.Domain) { "$($owner.Domain)\\$($owner.User)" } else { $owner.User }
 
 $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ("-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \`"$ps1\`"")
-$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero)
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances Parallel -ExecutionTimeLimit ([TimeSpan]::Zero)
 $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Highest
 $trigger = New-ScheduledTaskTrigger -AtLogOn
 
@@ -939,8 +1070,23 @@ if (isLockdownSuppressed() || !readBlockKeyboardFlag()) {
 }
 writeBlockKeyboardFlag(wantKeyBlock);
 applyOsLockdownPolicies(wantKeyBlock);
-setTimeout(() => void watchEdgeUi(), 2_000);
+setTimeout(() => void watchEdgeUi(), 1_500);
 setInterval(() => void watchEdgeUi(), 8_000);
+// LAUNCH_UI from admin Start — react within ~1s, not only on the 8s watchdog tick
+setInterval(() => {
+  try {
+    if (fs.existsSync(launchUiFlagPath)) void watchEdgeUi();
+  } catch {
+    /* ignore */
+  }
+}, 1_000);
+try {
+  fs.watchFile(launchUiFlagPath, { interval: 400 }, () => {
+    void watchEdgeUi();
+  });
+} catch {
+  /* ignore */
+}
 console.log(`[stella-agent] Edge UI watchdog on (interactive session); stop flag ${stopFlagPath}`);
 console.log(`[stella-agent] OS keyboard block (all keys + Keyboard Filter CAD) enabled=${wantKeyBlock}`);
 

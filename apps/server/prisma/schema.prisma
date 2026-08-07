@@ -135,6 +135,12 @@ model SiteSettings {
   blockKeyboard   Boolean  @default(true)
   /// When false, kiosk UI/agent stay off even after reboot until enabled again
   softwareEnabled Boolean  @default(true)
+  /// manual | light | dark | schedule — fleet theme control
+  themeMode       String   @default("manual")
+  /// HH:mm local server time — dark theme starts (when themeMode=schedule)
+  themeDarkFrom   String   @default("20:00")
+  /// HH:mm local server time — dark theme ends (when themeMode=schedule)
+  themeDarkTo     String   @default("08:00")
   /// Override SERVER_PUBLIC_URL from .env (null = use env)
   serverPublicUrl String?
   defaultHealthPort Int    @default(47821)
@@ -168,6 +174,8 @@ model Kiosk {
   syncStatus     SyncStatus  @default(unknown)
   syncMessage    String?
   appVersion     String?
+  /// Last reported Stella agent softwareVersion (OTA build stamp)
+  softwareVersion String?
   probeStatus    ProbeStatus   @default(unknown)
   probeMessage   String?
   lastProbeAt    DateTime?

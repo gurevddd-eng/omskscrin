@@ -103,8 +103,9 @@ $versionObj = @{
   appVersion      = "0.1.0"
   builtAt         = $builtAt
 } | ConvertTo-Json -Compress
-Set-Content (Join-Path $out "version.json") -Value $versionObj -Encoding UTF8
-Set-Content (Join-Path $out "VERSION") -Value $softwareVersion -Encoding UTF8
+$utf8NoBom = New-Object System.Text.UTF8Encoding $false
+[System.IO.File]::WriteAllText((Join-Path $out "version.json"), $versionObj, $utf8NoBom)
+[System.IO.File]::WriteAllText((Join-Path $out "VERSION"), $softwareVersion, $utf8NoBom)
 
 # OTA update zip (no Node runtime) — agent downloads this periodically
 $updOut = Join-Path $out "update.zip"

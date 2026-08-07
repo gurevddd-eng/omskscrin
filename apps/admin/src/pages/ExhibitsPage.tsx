@@ -6,6 +6,7 @@ import { PageShell } from "../components/ui/PageShell";
 import { Alert } from "../components/ui/Alert";
 import { Card } from "../components/ui/Card";
 import { useConfirm } from "../components/ui/confirm";
+import { RichTextEditor } from "../components/RichTextEditor";
 
 type MediaRef = { id: string; url: string; filename?: string };
 
@@ -244,9 +245,14 @@ export function ExhibitsPage() {
 
   function onFormKeyDown(e: KeyboardEvent<HTMLFormElement>) {
     if (e.key !== "Enter") return;
-    const tag = (e.target as HTMLElement).tagName;
+    const el = e.target as HTMLElement;
+    const tag = el.tagName;
     if (tag === "TEXTAREA" || tag === "BUTTON") return;
-    // Enter в input (ТТХ, название…) не должен случайно сохранять форму
+    // TipTap / contenteditable — Enter создаёт абзац, не submit
+    if (el.isContentEditable || el.closest?.(".ProseMirror, .rte, [contenteditable='true']")) {
+      return;
+    }
+    // Enter в input (название…) не должен случайно сохранять форму
     e.preventDefault();
   }
 
@@ -333,17 +339,18 @@ export function ExhibitsPage() {
                   placeholder="1–2 предложения для посетителя"
                 />
               </label>
-              <label className="exhibit-editor__body-label">
-                Полный текст
-                <span className="field-hint">Раздел «Описание» на киоске</span>
-                <textarea
-                  className="exhibit-editor__body"
+              <div className="exhibit-editor__body-label">
+                <span className="exhibit-editor__field-title">Полный текст</span>
+                <span className="field-hint">Раздел «Описание» на киоске — форматирование сохраняется</span>
+                <RichTextEditor
+                  key={editId ?? "new"}
+                  docKey={editId ?? "new"}
                   value={form.body}
-                  onChange={(e) => patchForm({ body: e.target.value })}
-                  rows={12}
+                  onChange={(body) => patchForm({ body })}
+                  disabled={!canEdit || busy}
                   placeholder="История, особенности…"
                 />
-              </label>
+              </div>
 
               <div className="specs-editor">
                 <label>

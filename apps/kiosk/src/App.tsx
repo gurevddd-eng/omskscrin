@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import type { SyncStatus } from "@stella/shared";
+import { normalizeHhMm, parseThemeMode, resolveEffectiveTheme } from "@stella/shared";
 import { loadConfig, type KioskConfig } from "./config";
 import {
   checkUpdates,
@@ -17,17 +18,18 @@ import { AudioPlayer } from "./AudioPlayer";
 import { ReadyImage, prefetchImages } from "./ReadyImage";
 import { setKeyboardBlocked } from "./lockdown";
 import { isTauriShell, launchExe, probeNativeShell } from "./native";
+import { sanitizeExhibitBody } from "./sanitizeHtml";
 
 type Tab = "home" | "about" | "gallery" | "video" | "timeline";
 
 const AD_ROTATE_MS = 8000;
 
-/** Poll interval for content version checks. Honors kiosk.json (e.g. 300). */
+/** Poll interval for content version checks. Honors kiosk.json (e.g. 60). */
 function contentPollSec(config: { syncIntervalSec: number }, errored: boolean) {
   const configured = Number(config.syncIntervalSec);
   const n = Number.isFinite(configured) && configured > 0 ? configured : 60;
-  if (errored) return Math.min(30, Math.max(15, n));
-  return Math.max(30, Math.min(n, 600));
+  if (errored) return Math.min(20, Math.max(10, n));
+  return Math.max(15, Math.min(n, 300));
 }
 
 const NAV: { id: Tab; label: string }[] = [
@@ -211,8 +213,12 @@ export function App() {
       return "light";
     }
   });
+  const [themeMode, setThemeMode] = useState<"manual" | "light" | "dark" | "schedule">("manual");
+  const [themeDarkFrom, setThemeDarkFrom] = useState("20:00");
+  const [themeDarkTo, setThemeDarkTo] = useState("08:00");
 
   const toggleTheme = useCallback(() => {
+    if (themeMode !== "manual") return;
     setTheme((prev) => {
       const next = prev === "light" ? "dark" : "light";
       try {
@@ -222,7 +228,53 @@ export function App() {
       }
       return next;
     });
-  }, []);
+  }, [themeMode]);
+
+  const applyServerTheme = useCallback(
+    (updates: {
+      themeMode?: string;
+      theme?: "light" | "dark" | null;
+      themeDarkFrom?: string;
+      themeDarkTo?: string;
+    }) => {
+      const mode = parseThemeMode(updates.themeMode);
+      setThemeMode(mode);
+      if (updates.themeDarkFrom) setThemeDarkFrom(normalizeHhMm(updates.themeDarkFrom, "20:00"));
+      if (updates.themeDarkTo) setThemeDarkTo(normalizeHhMm(updates.themeDarkTo, "08:00"));
+      if (mode === "manual") return;
+      const next =
+        updates.theme === "dark" || updates.theme === "light"
+          ? updates.theme
+          : resolveEffectiveTheme({
+              mode,
+              darkFrom: updates.themeDarkFrom || themeDarkFrom,
+              darkTo: updates.themeDarkTo || themeDarkTo,
+            }) || "light";
+      setTheme(next);
+      try {
+        localStorage.setItem("stella_kiosk_theme_v1", next);
+      } catch {
+        /* ignore */
+      }
+    },
+    [themeDarkFrom, themeDarkTo]
+  );
+
+  useEffect(() => {
+    if (themeMode !== "schedule") return;
+    const tick = () => {
+      const next = resolveEffectiveTheme({
+        mode: "schedule",
+        darkFrom: themeDarkFrom,
+        darkTo: themeDarkTo,
+      });
+      if (!next) return;
+      setTheme((prev) => (prev === next ? prev : next));
+    };
+    tick();
+    const id = window.setInterval(tick, 30_000);
+    return () => window.clearInterval(id);
+  }, [themeMode, themeDarkFrom, themeDarkTo]);
   const [nativeShell, setNativeShell] = useState(false);
   const [gameBusy, setGameBusy] = useState(false);
   const [gameError, setGameError] = useState<string | null>(null);
@@ -316,6 +368,43 @@ export function App() {
       }
     }
 
+    let syncBusy = false;
+    let syncQueued = false;
+
+    function scheduleNext(delaySec: number) {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => void runSync(), delaySec * 1000);
+    }
+
+    function requestSyncSoon() {
+      if (stopped) return;
+      if (syncBusy) {
+        syncQueued = true;
+        return;
+      }
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => void runSync(), 120);
+    }
+
+    async function runSync() {
+      if (stopped || syncBusy) {
+        if (syncBusy) syncQueued = true;
+        return;
+      }
+      syncBusy = true;
+      syncQueued = false;
+      try {
+        await tickSync();
+      } finally {
+        syncBusy = false;
+        if (stopped) return;
+        if (syncQueued) {
+          syncQueued = false;
+          scheduleNext(0.2);
+        }
+      }
+    }
+
     async function tickSync() {
       const updates = await checkUpdates(config!, getKnownSoftwareVersion());
       if (stopped) return;
@@ -326,6 +415,10 @@ export function App() {
 
       if (typeof updates?.blockKeyboard === "boolean") {
         setKeyboardBlocked(updates.blockKeyboard);
+      }
+
+      if (updates) {
+        applyServerTheme(updates);
       }
 
       const localFingerprint = lastContentVersion;
@@ -362,7 +455,7 @@ export function App() {
             syncStatus: "ok",
             syncMessage: null,
           });
-          timer = setTimeout(() => void tickSync(), contentPollSec(config!, false) * 1000);
+          scheduleNext(contentPollSec(config!, false));
           return;
         }
       }
@@ -372,7 +465,7 @@ export function App() {
         forceFullSync = false;
         setSyncStatus("ok");
         setSyncMessage("офлайн — локальный кэш");
-        timer = setTimeout(() => void tickSync(), contentPollSec(config!, true) * 1000);
+        scheduleNext(contentPollSec(config!, true));
         return;
       }
 
@@ -390,15 +483,20 @@ export function App() {
           lastSyncStatus = "ok";
           setSyncStatus("ok");
         }
-        await sendHeartbeat(config!, {
+        const hb = await sendHeartbeat(config!, {
           contentVersion: lastExhibitVersion,
           syncStatus: lastSyncStatus,
           syncMessage: null,
         });
-        timer = setTimeout(
-          () => void tickSync(),
-          contentPollSec(config!, false) * 1000
-        );
+        if (
+          hb?.syncFingerprint &&
+          lastContentVersion &&
+          hb.syncFingerprint !== lastContentVersion
+        ) {
+          requestSyncSoon();
+          return;
+        }
+        scheduleNext(contentPollSec(config!, false));
         return;
       }
 
@@ -448,19 +546,54 @@ export function App() {
         syncStatus: lastSyncStatus,
         syncMessage: result.syncMessage,
       });
-      timer = setTimeout(
-        () => void tickSync(),
-        contentPollSec(config!, lastSyncStatus === "error" || offline) * 1000
-      );
+      scheduleNext(contentPollSec(config!, lastSyncStatus === "error" || offline));
     }
 
     const hbTimer = setInterval(() => {
-      sendHeartbeat(config, {
-        contentVersion: lastExhibitVersion,
-        syncStatus: lastSyncStatus,
-        syncMessage: null,
+      void (async () => {
+        const hb = await sendHeartbeat(config, {
+          contentVersion: lastExhibitVersion,
+          syncStatus: lastSyncStatus,
+          syncMessage: null,
+        });
+        if (
+          hb?.syncFingerprint &&
+          lastContentVersion &&
+          hb.syncFingerprint !== lastContentVersion
+        ) {
+          requestSyncSoon();
+        }
+      })();
+    }, Math.max(15, config.heartbeatIntervalSec || 30) * 1000);
+
+    let events: EventSource | null = null;
+    let eventsRetry: ReturnType<typeof setTimeout> | null = null;
+
+    function connectEvents() {
+      if (stopped || !config?.serverUrl || !config.kioskId) return;
+      try {
+        events?.close();
+      } catch {
+        /* ignore */
+      }
+      const url = `${config.serverUrl.replace(/\/$/, "")}/api/kiosks/${encodeURIComponent(config.kioskId)}/events`;
+      events = new EventSource(url);
+      events.addEventListener("sync", () => {
+        requestSyncSoon();
       });
-    }, config.heartbeatIntervalSec * 1000);
+      events.onerror = () => {
+        try {
+          events?.close();
+        } catch {
+          /* ignore */
+        }
+        events = null;
+        if (stopped) return;
+        if (eventsRetry) clearTimeout(eventsRetry);
+        eventsRetry = setTimeout(connectEvents, 5_000);
+      };
+    }
+    connectEvents();
 
     void (async () => {
       const cached = await loadLocalCache(config.serverUrl);
@@ -480,15 +613,21 @@ export function App() {
           setSyncMessage("локальный кэш");
         }
       }
-      await tickSync();
+      await runSync();
     })();
 
     return () => {
       stopped = true;
       if (timer) clearTimeout(timer);
+      if (eventsRetry) clearTimeout(eventsRetry);
       clearInterval(hbTimer);
+      try {
+        events?.close();
+      } catch {
+        /* ignore */
+      }
     };
-  }, [config]);
+  }, [config, applyServerTheme]);
 
   useEffect(() => {
     bumpActivity();
@@ -496,7 +635,11 @@ export function App() {
     for (const e of events) window.addEventListener(e, bumpActivity);
     const idle = setInterval(() => {
       const last = (window as unknown as { __lastActive?: number }).__lastActive || Date.now();
-      const timeout = (config?.idleTimeoutSec || 60) * 1000;
+      const idleSec = Number(config?.idleTimeoutSec);
+      // 10 min default; migrate legacy 60s from older kiosk.json without rewriting every PC
+      const resolved =
+        !Number.isFinite(idleSec) || idleSec <= 0 || idleSec === 60 ? 600 : idleSec;
+      const timeout = resolved * 1000;
       if (Date.now() - last <= timeout) return;
       setTab((prev) => {
         // Chronicle pages stay open — visitors often read without touching the screen
@@ -646,7 +789,12 @@ export function App() {
   }, [endTimelineSwipe]);
 
   const showWing =
-    (tab !== "home" && tab !== "about" && tab !== "gallery" && tab !== "timeline") || hasAds;
+    (tab !== "home" &&
+      tab !== "about" &&
+      tab !== "gallery" &&
+      tab !== "video" &&
+      tab !== "timeline") ||
+    hasAds;
 
   useEffect(() => {
     setAdIdx(0);
@@ -748,10 +896,7 @@ export function App() {
 
         {timelinePages.length > 0 ? (
           <div className="rail__chronicle" aria-label="Хроника">
-            <div className="rail__chronicle-head">
-              <span className="rail__chronicle-kicker">Хроника</span>
-              <span className="rail__chronicle-rule" aria-hidden />
-            </div>
+            <p className="rail__chronicle-label">Хроника</p>
             <div className="rail__years" role="list">
               {timelinePages.map((page) => {
                 const active = tab === "timeline" && activeTimeline?.id === page.id;
@@ -764,8 +909,8 @@ export function App() {
                     aria-current={active ? "page" : undefined}
                     onClick={() => goTimeline(page.id)}
                   >
-                    <span className="rail__year-node" aria-hidden />
                     <span className="rail__year-label">{page.label}</span>
+                    <span className="rail__year-mark" aria-hidden />
                   </button>
                 );
               })}
@@ -775,18 +920,25 @@ export function App() {
       </nav>
 
       <div className="rail__foot">
-        <button
-          type="button"
-          className="rail__theme"
-          onClick={toggleTheme}
-          aria-label={theme === "light" ? "Включить тёмную тему" : "Включить светлую тему"}
-        >
-          <span className="rail__theme-label">Тема</span>
-          <span className="rail__theme-value">{theme === "light" ? "Светлая" : "Тёмная"}</span>
-          <span className="rail__theme-switch" data-theme={theme} aria-hidden>
-            <span className="rail__theme-knob" />
-          </span>
-        </button>
+        {themeMode === "manual" ? (
+          <button
+            type="button"
+            className="rail__theme"
+            onClick={toggleTheme}
+            aria-label={theme === "light" ? "Включить тёмную тему" : "Включить светлую тему"}
+          >
+            <span className="rail__theme-label">Тема</span>
+            <span className="rail__theme-value">{theme === "light" ? "Светлая" : "Тёмная"}</span>
+            <span className="rail__theme-switch" data-theme={theme} aria-hidden>
+              <span className="rail__theme-knob" />
+            </span>
+          </button>
+        ) : (
+          <div className="rail__theme rail__theme--locked" aria-label="Тема задана с сервера">
+            <span className="rail__theme-label">Тема</span>
+            <span className="rail__theme-value">{theme === "light" ? "Светлая" : "Тёмная"}</span>
+          </div>
+        )}
         <RailClock syncStatus={syncStatus} statusText={statusText} />
       </div>
     </aside>
@@ -938,58 +1090,65 @@ export function App() {
 
         {exhibit && tab === "about" && (
           <section className="panel panel--about" key={`about-${screenKey}`}>
-            <header className="page-head">
+            <header className="about-head">
               <p className="panel__kicker">Описание</p>
               <h1 className="panel__title panel__title--sm">{exhibit.title}</h1>
               <div className="page-head__rule" />
             </header>
+
             <div className="panel__scroll">
               <div className="about-top">
-                <div className="about-top__ttx">
-                  <div className="ttx-head">
-                    <p className="about-top__label">ТТХ</p>
+                <section className="about-ttx" aria-label="Характеристики">
+                  <header className="about-ttx__head">
+                    <p className="about-ttx__label">Характеристики</p>
                     {specs.length > 0 ? (
-                      <span className="ttx-head__count">{String(specs.length).padStart(2, "0")}</span>
+                      <span className="about-ttx__count">{String(specs.length).padStart(2, "0")}</span>
                     ) : null}
-                  </div>
+                  </header>
                   {specs.length > 0 ? (
-                    <div className="ttx-sheet">
-                      <table className="ttx-table">
-                        <tbody>
-                          {specs.map((row, i) => (
-                            <tr key={`${row.label}-${i}`}>
-                              <th scope="row">{row.label}</th>
-                              <td>{row.value || "—"}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
+                    <dl className="about-ttx__list about-ttx__list--stack">
+                      {specs.map((row, i) => (
+                        <div className="about-ttx__row" key={`${row.label}-${i}`}>
+                          <dt>{row.label}</dt>
+                          <dd>{row.value || "—"}</dd>
+                        </div>
+                      ))}
+                    </dl>
                   ) : (
-                    <p className="about-top__empty">Характеристики не заполнены</p>
+                    <p className="about-ttx__empty">Характеристики не заполнены</p>
                   )}
-                </div>
-                <div className="about-top__side">
+                </section>
+
+                <aside className="about-media">
                   {hero ? (
-                    <figure className="about-top__visual">
-                      <ReadyImage src={hero} alt="" />
-                      <figcaption className="about-top__cap">
-                        <span>Парк Победы</span>
-                        <span>{exhibit.title}</span>
-                      </figcaption>
+                    <figure className="about-hero">
+                      <ReadyImage className="about-hero__img" src={hero} alt="" />
+                      <figcaption className="about-hero__cap">Парк Победы</figcaption>
                     </figure>
                   ) : (
-                    <div className="about-top__visual about-top__visual--empty" />
+                    <div className="about-hero about-hero--empty" aria-hidden />
                   )}
                   {audio ? (
                     <div className="about-audio">
                       <AudioPlayer src={audio} active={tab === "about"} title="Аудиогид" />
                     </div>
                   ) : null}
-                </div>
+                </aside>
               </div>
-              <div className="about-prose">
-                <p className="panel__body">{exhibit.body || exhibit.summary}</p>
+
+              <div className="about-read">
+                {(() => {
+                  const html = sanitizeExhibitBody(exhibit.body || exhibit.summary);
+                  if (!html) {
+                    return <p className="panel__body panel__body--empty">Текст не заполнен</p>;
+                  }
+                  return (
+                    <div
+                      className="panel__body panel__body--rich"
+                      dangerouslySetInnerHTML={{ __html: html }}
+                    />
+                  );
+                })()}
               </div>
             </div>
           </section>
@@ -1079,30 +1238,21 @@ export function App() {
 
         {exhibit && tab === "video" && (
           <section className="panel panel--video" key={`video-${screenKey}`}>
-            <div className="cinema">
-              <header className="cinema__top">
-                <div>
-                  <p className="panel__kicker">Видеоматериал</p>
-                  <h1 className="panel__title panel__title--sm">{exhibit.title}</h1>
-                </div>
-                {video ? (
-                  <span className="cinema__badge" aria-hidden>
-                    HD
-                  </span>
-                ) : null}
-              </header>
+            <header className="video-head">
+              <p className="panel__kicker">Видео</p>
+              <h1 className="panel__title panel__title--sm">{exhibit.title}</h1>
+              <div className="page-head__rule" />
+            </header>
 
-              <div className="cinema__frame">
-                {video ? (
-                  <VideoPlayer src={video} active={tab === "video"} />
-                ) : (
-                  <EmptyBlock title="Видео не загружено" text="Прикрепите видеофайл к экспонату в админке." />
-                )}
-              </div>
-
+            <div className="video-stage">
               {video ? (
-                <p className="cinema__hint">Коснитесь экрана или кнопки «Пауза», чтобы остановить ролик</p>
-              ) : null}
+                <VideoPlayer src={video} active={tab === "video"} title={exhibit.title} />
+              ) : (
+                <EmptyBlock
+                  title="Видео не загружено"
+                  text="Прикрепите ролик к экспонату в админке — он появится здесь."
+                />
+              )}
             </div>
           </section>
         )}

@@ -10,9 +10,10 @@ function formatTime(sec: number) {
 type Props = {
   src: string;
   active: boolean;
+  title?: string;
 };
 
-export function VideoPlayer({ src, active }: Props) {
+export function VideoPlayer({ src, active, title }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [playing, setPlaying] = useState(false);
   const [muted, setMuted] = useState(false);
@@ -28,7 +29,7 @@ export function VideoPlayer({ src, active }: Props) {
     if (hideTimer.current) clearTimeout(hideTimer.current);
     hideTimer.current = setTimeout(() => {
       if (videoRef.current && !videoRef.current.paused) setControlsVisible(false);
-    }, 2800);
+    }, 3200);
   }, []);
 
   useEffect(() => {
@@ -103,13 +104,28 @@ export function VideoPlayer({ src, active }: Props) {
     if (!el) return;
     bumpControls();
     if (el.paused) {
-      void el.play().then(() => setPlaying(true)).catch(() => setPlaying(false));
+      void el
+        .play()
+        .then(() => setPlaying(true))
+        .catch(() => setPlaying(false));
     } else {
       el.pause();
       setPlaying(false);
       setControlsVisible(true);
     }
   }, [bumpControls]);
+
+  const seekBy = useCallback(
+    (delta: number) => {
+      const el = videoRef.current;
+      if (!el || !duration) return;
+      const next = Math.min(Math.max(0, el.currentTime + delta), duration);
+      el.currentTime = next;
+      setCurrent(next);
+      bumpControls();
+    },
+    [bumpControls, duration]
+  );
 
   function onTimeUpdate() {
     const el = videoRef.current;
@@ -157,11 +173,16 @@ export function VideoPlayer({ src, active }: Props) {
 
   return (
     <div
-      className={`player${controlsVisible || !playing ? " is-controls" : ""}`}
+      className={`player${controlsVisible || !playing ? " is-controls" : ""}${playing ? " is-playing" : ""}`}
       onPointerMove={bumpControls}
       onPointerDown={bumpControls}
     >
-      <button type="button" className="player__stage" onClick={togglePlay} aria-label={playing ? "Пауза" : "Пуск"}>
+      <button
+        type="button"
+        className="player__stage"
+        onClick={togglePlay}
+        aria-label={playing ? "Пауза" : "Пуск"}
+      >
         <video
           ref={videoRef}
           src={src}
@@ -176,19 +197,17 @@ export function VideoPlayer({ src, active }: Props) {
             setControlsVisible(true);
           }}
         />
+        <span className={`player__veil${playing && !controlsVisible ? " is-hidden" : ""}`} aria-hidden />
         {!playing && (
           <span className="player__big-play" aria-hidden>
-            <span>Пуск</span>
+            <span className="player__big-play__icon" />
+            <span className="player__big-play__label">Смотреть</span>
           </span>
         )}
       </button>
 
-      <div className="player__bar">
-        <button type="button" className="player__btn player__btn--play" onClick={togglePlay}>
-          {playing ? "Пауза" : "Пуск"}
-        </button>
-
-        <div className="player__time">{formatTime(current)}</div>
+      <div className="player__dock">
+        {title ? <p className="player__caption">{title}</p> : null}
 
         <label className="player__seek">
           <span className="sr-only">Перемотка</span>
@@ -206,24 +225,64 @@ export function VideoPlayer({ src, active }: Props) {
           />
         </label>
 
-        <div className="player__time player__time--end">{formatTime(duration)}</div>
+        <div className="player__row">
+          <div className="player__transport">
+            <button
+              type="button"
+              className="player__chip"
+              onClick={() => seekBy(-10)}
+              disabled={!duration}
+              aria-label="Назад 10 секунд"
+            >
+              −10
+            </button>
+            <button
+              type="button"
+              className="player__btn player__btn--play"
+              onClick={togglePlay}
+              aria-label={playing ? "Пауза" : "Пуск"}
+            >
+              {playing ? "Пауза" : "Пуск"}
+            </button>
+            <button
+              type="button"
+              className="player__chip"
+              onClick={() => seekBy(10)}
+              disabled={!duration}
+              aria-label="Вперёд 10 секунд"
+            >
+              +10
+            </button>
+          </div>
 
-        <button type="button" className="player__btn player__btn--mute" onClick={toggleMute}>
-          {muted || volume === 0 ? "Звук" : "Тише"}
-        </button>
+          <div className="player__time" aria-live="off">
+            <strong>{formatTime(current)}</strong>
+            <span>/ {formatTime(duration)}</span>
+          </div>
 
-        <label className="player__volume">
-          <span className="player__vol-label">Громкость</span>
-          <input
-            type="range"
-            min={0}
-            max={1}
-            step={0.01}
-            value={muted ? 0 : volume}
-            style={{ ["--progress" as string]: `${volPct}%` }}
-            onChange={(e) => onVolumeInput(Number(e.target.value))}
-          />
-        </label>
+          <div className="player__sound">
+            <button
+              type="button"
+              className="player__chip"
+              onClick={toggleMute}
+              aria-label={muted || volume === 0 ? "Включить звук" : "Выключить звук"}
+            >
+              {muted || volume === 0 ? "Звук" : "Тише"}
+            </button>
+            <label className="player__volume">
+              <span className="sr-only">Громкость</span>
+              <input
+                type="range"
+                min={0}
+                max={1}
+                step={0.01}
+                value={muted ? 0 : volume}
+                style={{ ["--progress" as string]: `${volPct}%` }}
+                onChange={(e) => onVolumeInput(Number(e.target.value))}
+              />
+            </label>
+          </div>
+        </div>
       </div>
     </div>
   );
