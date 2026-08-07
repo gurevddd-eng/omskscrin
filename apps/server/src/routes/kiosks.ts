@@ -20,6 +20,7 @@ import { expandHostname, getEffectiveDeploy, refreshDeployCredentialsFromDb } fr
 import { testWindowsHostConnection } from "../deployTest.js";
 import { parseSpecs } from "./exhibits.js";
 import { getGlobalAdsState, syncFingerprint } from "./ads.js";
+import { getGlobalTimelineState } from "./timeline.js";
 import { ensureSiteSettings } from "../siteSettings.js";
 import { createHash } from "node:crypto";
 import { createReadStream, existsSync } from "node:fs";
@@ -504,6 +505,7 @@ export async function registerKioskRoutes(app: FastifyInstance) {
 
     const exhibit = kiosk.exhibit;
     const globalAds = await getGlobalAdsState();
+    const timeline = await getGlobalTimelineState();
     const filesMap = new Map<
       string,
       { id: string; filename: string; mimeType: string; size: number; hash: string }
@@ -514,6 +516,7 @@ export async function registerKioskRoutes(app: FastifyInstance) {
     if (exhibit?.audio) filesMap.set(exhibit.audio.id, exhibit.audio);
     for (const g of exhibit?.gallery ?? []) filesMap.set(g.file.id, g.file);
     for (const f of globalAds.files) filesMap.set(f.id, f);
+    for (const f of timeline.files) filesMap.set(f.id, f);
 
     const files = [...filesMap.values()].map((f) => ({
       ...toFileDto(f),
@@ -540,6 +543,13 @@ export async function registerKioskRoutes(app: FastifyInstance) {
         : null,
       adIds: globalAds.adIds,
       adsVersion: globalAds.adsVersion,
+      timelinePages: timeline.pages.map((p) => ({
+        id: p.id,
+        label: p.label,
+        sortOrder: p.sortOrder,
+        imageIds: p.imageIds,
+      })),
+      timelineVersion: timeline.timelineVersion,
       blockKeyboard: globalAds.blockKeyboard,
       softwareEnabled: globalAds.softwareEnabled,
       settingsVersion: globalAds.settingsVersion,
@@ -601,16 +611,23 @@ export async function registerKioskRoutes(app: FastifyInstance) {
     const localSw = String(q.softwareVersion || "").trim();
     const updateAvailable = Boolean(localSw && localSw !== meta.softwareVersion && meta.updateZipPath);
     const ads = await getGlobalAdsState();
+    const timeline = await getGlobalTimelineState();
     const contentVersion = kiosk.exhibit?.contentVersion ?? null;
 
     return {
       kioskId: kiosk.kioskId,
       contentVersion,
       adsVersion: ads.adsVersion,
+      timelineVersion: timeline.timelineVersion,
       settingsVersion: ads.settingsVersion,
       blockKeyboard: ads.blockKeyboard,
       softwareEnabled: ads.softwareEnabled,
-      syncFingerprint: syncFingerprint(contentVersion, ads.adsVersion, ads.settingsVersion),
+      syncFingerprint: syncFingerprint(
+        contentVersion,
+        ads.adsVersion,
+        ads.settingsVersion,
+        timeline.timelineVersion
+      ),
       softwareVersion: meta.softwareVersion,
       appVersion: meta.appVersion,
       updateAvailable: localSw ? updateAvailable : Boolean(meta.updateZipPath || meta.packageZipPath),

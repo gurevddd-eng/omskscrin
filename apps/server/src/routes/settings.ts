@@ -73,9 +73,10 @@ export async function getSiteSettingsDto() {
 export function syncFingerprint(
   contentVersion: string | null | undefined,
   adsVersion: string,
-  settingsVersion = "0"
+  settingsVersion = "0",
+  timelineVersion = "0"
 ) {
-  return `${contentVersion ?? "0"}|${adsVersion}|${settingsVersion}`;
+  return `${contentVersion ?? "0"}|${adsVersion}|${settingsVersion}|${timelineVersion}`;
 }
 
 export async function registerSettingsRoutes(app: FastifyInstance) {

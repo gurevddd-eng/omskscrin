@@ -3,6 +3,7 @@ import { AuthProvider } from "./auth";
 import { ConfirmProvider } from "./components/ui/confirm";
 import { DashboardPage } from "./pages/DashboardPage";
 import { AdsPage } from "./pages/AdsPage";
+import { TimelineAdminPage } from "./pages/TimelineAdminPage";
 import { AppLayout } from "./components/layout/AppLayout";
 import { ExhibitsPage } from "./pages/ExhibitsPage";
 import { KiosksPage } from "./pages/KiosksPage";
@@ -22,6 +23,7 @@ export function App() {
             <Route index element={<DashboardPage />} />
             <Route path="monitor" element={<MonitoringPage />} />
             <Route path="exhibits" element={<ExhibitsPage />} />
+            <Route path="timeline" element={<TimelineAdminPage />} />
             <Route path="ads" element={<AdsPage />} />
             <Route path="kiosks" element={<KiosksPage />} />
             <Route path="settings" element={<SettingsPage />} />

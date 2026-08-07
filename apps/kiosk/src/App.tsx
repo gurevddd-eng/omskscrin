@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import type { SyncStatus } from "@stella/shared";
 import { loadConfig, type KioskConfig } from "./config";
 import {
@@ -18,7 +18,7 @@ import { ReadyImage, prefetchImages } from "./ReadyImage";
 import { setKeyboardBlocked } from "./lockdown";
 import { isTauriShell, launchExe, probeNativeShell } from "./native";
 
-type Tab = "home" | "about" | "gallery" | "video";
+type Tab = "home" | "about" | "gallery" | "video" | "timeline";
 
 const AD_ROTATE_MS = 8000;
 
@@ -137,6 +137,13 @@ export function App() {
   const [state, setState] = useState<CachedState | null>(null);
   const [tab, setTab] = useState<Tab>("home");
   const [galleryIdx, setGalleryIdx] = useState(0);
+  const [timelinePageId, setTimelinePageId] = useState<string | null>(null);
+  const gallerySwipe = useRef<{
+    id: number;
+    x: number;
+    y: number;
+    moved: boolean;
+  } | null>(null);
   const [adIdx, setAdIdx] = useState(0);
   const [syncStatus, setSyncStatus] = useState<SyncStatus>("unknown");
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
@@ -156,6 +163,19 @@ export function App() {
       if (prev === next) return prev;
       setScreenKey((k) => k + 1);
       return next;
+    });
+    if (next !== "timeline") setTimelinePageId(null);
+  }, []);
+
+  const goTimeline = useCallback((pageId: string) => {
+    setTimelinePageId(pageId);
+    setTab((prev) => {
+      if (prev === "timeline") {
+        setScreenKey((k) => k + 1);
+        return prev;
+      }
+      setScreenKey((k) => k + 1);
+      return "timeline";
     });
   }, []);
 
@@ -397,7 +417,65 @@ export function App() {
   const asideThumb = galleryIds[0] ? mediaUrl(state, galleryIds[0], serverUrl) : hero;
   const hasAds = adIds.length > 0;
   const adSrc = mediaUrl(state, adIds[adIdx % Math.max(adIds.length, 1)], serverUrl);
-  const showWing = tab !== "home" || hasAds;
+  const galleryCount = galleryIds.length;
+  const timelinePages = state?.manifest.timelinePages ?? [];
+  const activeTimeline =
+    timelinePages.find((p) => p.id === timelinePageId) || timelinePages[0] || null;
+
+  useEffect(() => {
+    if (!timelinePages.length) {
+      setTimelinePageId(null);
+      return;
+    }
+    if (timelinePageId && timelinePages.some((p) => p.id === timelinePageId)) return;
+    setTimelinePageId(timelinePages[0]!.id);
+  }, [timelinePages, timelinePageId]);
+
+  const onGalleryPointerDown = useCallback((e: ReactPointerEvent<HTMLElement>) => {
+    if (galleryCount < 2) return;
+    if (e.pointerType === "mouse" && e.button !== 0) return;
+    gallerySwipe.current = { id: e.pointerId, x: e.clientX, y: e.clientY, moved: false };
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      /* ignore */
+    }
+  }, [galleryCount]);
+
+  const onGalleryPointerMove = useCallback((e: ReactPointerEvent<HTMLElement>) => {
+    const s = gallerySwipe.current;
+    if (!s || s.id !== e.pointerId) return;
+    const dx = e.clientX - s.x;
+    const dy = e.clientY - s.y;
+    if (Math.abs(dx) > 12 || Math.abs(dy) > 12) s.moved = true;
+  }, []);
+
+  const endGallerySwipe = useCallback(
+    (e: ReactPointerEvent<HTMLElement>) => {
+      const s = gallerySwipe.current;
+      if (!s || s.id !== e.pointerId) return;
+      gallerySwipe.current = null;
+      try {
+        if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+          e.currentTarget.releasePointerCapture(e.pointerId);
+        }
+      } catch {
+        /* ignore */
+      }
+      if (galleryCount < 2) return;
+      const dx = e.clientX - s.x;
+      const dy = e.clientY - s.y;
+      if (Math.abs(dx) < 48) return;
+      if (Math.abs(dx) < Math.abs(dy) * 1.1) return;
+      setGalleryIdx((i) =>
+        dx < 0 ? (i + 1) % galleryCount : (i - 1 + galleryCount) % galleryCount
+      );
+    },
+    [galleryCount]
+  );
+
+  const showWing =
+    (tab !== "home" && tab !== "about" && tab !== "gallery" && tab !== "timeline") || hasAds;
 
   useEffect(() => {
     setAdIdx(0);
@@ -409,6 +487,7 @@ export function App() {
       exhibit?.heroImageId,
       ...(exhibit?.galleryIds || []),
       ...(state.manifest.adIds || []),
+      ...(state.manifest.timelinePages || []).flatMap((p) => p.imageIds),
     ];
     prefetchImages(ids.map((id) => mediaUrl(state, id, serverUrl)));
   }, [state, exhibit?.heroImageId, exhibit?.galleryIds, serverUrl]);
@@ -429,7 +508,7 @@ export function App() {
 
   const wingPromo = useMemo(() => {
     if (!exhibit || hasAds) return null;
-    if (tab === "home" || tab === "about") {
+    if (tab === "home") {
       if (video) {
         return {
           kicker: "Видео",
@@ -449,16 +528,7 @@ export function App() {
         imageKind: "photo" as const,
       };
     }
-    if (tab === "gallery") {
-      return {
-        kicker: "Описание",
-        title: exhibit.title,
-        cta: "Читать описание",
-        action: () => goTab("about"),
-        image: hero,
-        imageKind: "photo" as const,
-      };
-    }
+    if (tab === "about" || tab === "gallery") return null;
     return {
       kicker: "Галерея",
       title: exhibit.title,
@@ -507,6 +577,23 @@ export function App() {
             <span className="rail__nav-mark" aria-hidden />
           </button>
         ))}
+
+        {timelinePages.length > 0 ? (
+          <div className="rail__years" aria-label="Хроника">
+            {timelinePages.map((page) => (
+              <button
+                key={page.id}
+                type="button"
+                className={`rail__year-btn ${
+                  tab === "timeline" && activeTimeline?.id === page.id ? "is-active" : ""
+                }`}
+                onClick={() => goTimeline(page.id)}
+              >
+                {page.label}
+              </button>
+            ))}
+          </div>
+        ) : null}
       </nav>
 
       <div className="rail__foot">
@@ -586,7 +673,7 @@ export function App() {
     </aside>
   ) : null;
 
-  if (!exhibit) {
+  if (!exhibit && tab !== "timeline") {
     return (
       <div
         className={`shell shell--empty ${hiContrast ? "is-contrast" : ""}`}
@@ -614,7 +701,27 @@ export function App() {
       {rail}
 
       <main className="stage">
-        {tab === "home" && (
+        {tab === "timeline" && (
+          <section className="panel panel--timeline" key={`timeline-${activeTimeline?.id || "x"}-${screenKey}`}>
+            {activeTimeline?.imageIds?.length ? (
+              <div className="timeline-stack">
+                {activeTimeline.imageIds.map((id) => {
+                  const src = mediaUrl(state, id, serverUrl);
+                  return src ? (
+                    <ReadyImage key={id} className="timeline-stack__img" src={src} alt="" />
+                  ) : null;
+                })}
+              </div>
+            ) : (
+              <EmptyBlock
+                title={activeTimeline?.label || "Хроника"}
+                text="Для этой страницы ещё не загружены изображения. Настройте раздел «Хроника» в админке."
+              />
+            )}
+          </section>
+        )}
+
+        {exhibit && tab === "home" && (
           <section className="panel panel--home" key={`home-${screenKey}`}>
             <div className="home-hero" aria-hidden={!hero}>
               {hero ? (
@@ -648,7 +755,7 @@ export function App() {
           </section>
         )}
 
-        {tab === "about" && (
+        {exhibit && tab === "about" && (
           <section className="panel panel--about" key={`about-${screenKey}`}>
             <header className="page-head">
               <p className="panel__kicker">Описание</p>
@@ -707,25 +814,9 @@ export function App() {
           </section>
         )}
 
-        {tab === "gallery" && (
+        {exhibit && tab === "gallery" && (
           <section className="panel panel--gallery" key={`gallery-${screenKey}`}>
-            <div
-              className="gallery-view"
-              onPointerDown={(e) => {
-                (e.currentTarget as HTMLElement).dataset.px = String(e.clientX);
-              }}
-              onPointerUp={(e) => {
-                if (!galleryIds.length) return;
-                const start = Number((e.currentTarget as HTMLElement).dataset.px || 0);
-                const dx = e.clientX - start;
-                if (Math.abs(dx) < 64) return;
-                setGalleryIdx((i) =>
-                  dx < 0
-                    ? (i + 1) % galleryIds.length
-                    : (i - 1 + galleryIds.length) % galleryIds.length
-                );
-              }}
-            >
+            <div className="gallery-view">
               <header className="gallery-view__top">
                 <div>
                   <p className="panel__kicker">Галерея</p>
@@ -744,7 +835,13 @@ export function App() {
               </header>
 
               {gallerySrc ? (
-                <figure className="gallery-view__figure">
+                <figure
+                  className="gallery-view__figure"
+                  onPointerDown={onGalleryPointerDown}
+                  onPointerMove={onGalleryPointerMove}
+                  onPointerUp={endGallerySwipe}
+                  onPointerCancel={endGallerySwipe}
+                >
                   <ReadyImage key={gallerySrc} src={gallerySrc} alt="" />
                 </figure>
               ) : (
@@ -799,7 +896,7 @@ export function App() {
           </section>
         )}
 
-        {tab === "video" && (
+        {exhibit && tab === "video" && (
           <section className="panel panel--video" key={`video-${screenKey}`}>
             <div className="cinema">
               <header className="cinema__top">

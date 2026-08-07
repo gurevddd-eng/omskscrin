@@ -6,6 +6,7 @@ export async function ensureSiteSettings() {
     create: {
       id: "default",
       adsVersion: "1",
+      timelineVersion: "1",
       settingsVersion: "1",
       blockKeyboard: true,
       softwareEnabled: true,

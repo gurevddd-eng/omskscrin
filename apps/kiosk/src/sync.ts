@@ -100,13 +100,14 @@ async function idbClear(): Promise<void> {
   }
 }
 
-/** Same format as server syncFingerprint: contentVersion|adsVersion|settingsVersion */
+/** Same format as server syncFingerprint: content|ads|settings|timeline */
 export function fingerprintOf(
   manifest:
     | {
         contentVersion?: string | null;
         adsVersion?: string | null;
         settingsVersion?: string | null;
+        timelineVersion?: string | null;
         exhibit?: { contentVersion?: string | null } | null;
       }
     | null
@@ -126,7 +127,11 @@ export function fingerprintOf(
     manifest?.settingsVersion != null && String(manifest.settingsVersion).length
       ? String(manifest.settingsVersion)
       : "0";
-  return `${content}|${ads}|${settings}`;
+  const timeline =
+    manifest?.timelineVersion != null && String(manifest.timelineVersion).length
+      ? String(manifest.timelineVersion)
+      : "0";
+  return `${content}|${ads}|${settings}|${timeline}`;
 }
 
 function fileHash(file: { hash?: string | null; size?: number; mimeType?: string }) {

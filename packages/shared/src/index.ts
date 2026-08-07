@@ -285,6 +285,9 @@ export interface KioskManifest {
   /** Global ads for all kiosks */
   adIds: string[];
   adsVersion: string;
+  /** Shared timeline year pages (1941…) for all kiosks */
+  timelinePages: TimelinePageManifest[];
+  timelineVersion: string;
   /** Visitor keyboard blocked on kiosk UI */
   blockKeyboard: boolean;
   /** When false, kiosk software stays fully off (persists across reboot) */
@@ -300,10 +303,11 @@ export interface KioskUpdates {
   kioskId: string;
   contentVersion: string | null;
   adsVersion: string;
+  timelineVersion: string;
   settingsVersion: string;
   blockKeyboard: boolean;
   softwareEnabled: boolean;
-  /** Combined fingerprint: contentVersion|adsVersion|settingsVersion */
+  /** Combined fingerprint: contentVersion|adsVersion|settingsVersion|timelineVersion */
   syncFingerprint: string;
   softwareVersion: string;
   appVersion: string;
@@ -349,5 +353,29 @@ export interface AdsDto {
   adsVersion: string;
   updatedAt: string;
 }
+
+/** One shared timeline page (year) with up to 8 ordered images */
+export interface TimelinePageDto {
+  id: string;
+  label: string;
+  sortOrder: number;
+  imageIds: string[];
+  images: FileDto[];
+}
+
+export interface TimelinePageManifest {
+  id: string;
+  label: string;
+  sortOrder: number;
+  imageIds: string[];
+}
+
+export interface TimelineDto {
+  pages: TimelinePageDto[];
+  timelineVersion: string;
+  updatedAt: string;
+}
+
+export const TIMELINE_MAX_IMAGES = 8;
 
 export const ONLINE_THRESHOLD_MS = 2 * 60 * 1000;

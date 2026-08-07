@@ -61,6 +61,7 @@ model MediaFile {
   audioOf      Exhibit[] @relation("Audio")
   galleryLinks ExhibitGallery[]
   globalAds    GlobalAd[]
+  timelineLinks TimelinePageImage[]
 }
 
 model Exhibit {
@@ -103,9 +104,32 @@ model GlobalAd {
   file MediaFile @relation(fields: [fileId], references: [id], onDelete: Cascade)
 }
 
+/// Shared timeline year pages (e.g. 1941…) for all kiosks
+model TimelinePage {
+  id        String   @id @default(cuid())
+  label     String
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  images TimelinePageImage[]
+}
+
+model TimelinePageImage {
+  pageId    String
+  fileId    String
+  sortOrder Int    @default(0)
+
+  page TimelinePage @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  file MediaFile    @relation(fields: [fileId], references: [id], onDelete: Cascade)
+
+  @@id([pageId, fileId])
+}
+
 model SiteSettings {
   id              String   @id @default("default")
   adsVersion      String   @default("1")
+  timelineVersion String   @default("1")
   settingsVersion String   @default("1")
   /// Block visitor keyboard on kiosks (synced via manifest)
   blockKeyboard   Boolean  @default(true)

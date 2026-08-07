@@ -11,6 +11,7 @@ import { registerFileRoutes } from "./routes/files.js";
 import { registerKioskRoutes } from "./routes/kiosks.js";
 import { registerAdsRoutes } from "./routes/ads.js";
 import { registerSettingsRoutes } from "./routes/settings.js";
+import { registerTimelineRoutes } from "./routes/timeline.js";
 import { startKioskProbeLoop } from "./kioskProbe.js";
 import { loadNetworkRuntimeFromDb } from "./networkSettings.js";
 import { refreshDeployCredentialsFromDb } from "./deployCredentials.js";
@@ -56,6 +57,7 @@ async function main() {
   await registerFileRoutes(app);
   await registerExhibitRoutes(app);
   await registerAdsRoutes(app);
+  await registerTimelineRoutes(app);
   await registerSettingsRoutes(app);
   await registerKioskRoutes(app);
 

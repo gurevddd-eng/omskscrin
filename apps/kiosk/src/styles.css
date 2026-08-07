@@ -93,6 +93,9 @@ img {
 }
 
 .shell--home:not(.shell--with-ads),
+.shell--about:not(.shell--with-ads),
+.shell--gallery:not(.shell--with-ads),
+.shell--timeline:not(.shell--with-ads),
 .shell--empty {
   grid-template-columns: var(--rail) minmax(0, 1fr);
 }
@@ -273,6 +276,69 @@ img {
   margin-top: 28px;
   flex: 1;
   min-height: 0;
+  overflow: auto;
+}
+
+.rail__years {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.rail__year-btn {
+  text-align: center;
+  padding: 10px 8px;
+  border-radius: 10px;
+  font-family: var(--font-display);
+  font-size: 1.35rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: rgba(255, 255, 255, 0.55);
+  transition: color 0.15s ease, background 0.15s ease;
+}
+
+.rail__year-btn:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.rail__year-btn.is-active {
+  color: #fff;
+  background: rgba(227, 6, 19, 0.22);
+  box-shadow: inset 0 0 0 1px rgba(227, 6, 19, 0.45);
+}
+
+/* Timeline stack — full-bleed images, no gaps */
+.panel--timeline {
+  padding: 0;
+  gap: 0;
+  overflow: auto;
+  background: #0a0a0a;
+}
+
+.timeline-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  width: 100%;
+}
+
+.timeline-stack__img,
+.timeline-stack .ready-img {
+  display: block;
+  width: 100%;
+  height: auto;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  object-fit: cover;
+  vertical-align: top;
 }
 
 .rail__nav-btn {
@@ -961,6 +1027,9 @@ img {
   display: grid;
   place-items: center;
   border: 1px solid var(--line);
+  touch-action: pan-y;
+  cursor: grab;
+  user-select: none;
 }
 
 .gallery-view__figure img {
@@ -1600,6 +1669,9 @@ img {
   }
 
   .shell--home:not(.shell--with-ads),
+  .shell--about:not(.shell--with-ads),
+  .shell--gallery:not(.shell--with-ads),
+  .shell--timeline:not(.shell--with-ads),
   .shell--empty {
     grid-template-columns: 140px 1fr;
   }
