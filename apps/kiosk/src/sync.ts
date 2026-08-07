@@ -5,7 +5,7 @@ const MANIFEST_KEY = "stella_kiosk_manifest_v2";
 const SOFTWARE_KEY = "stella_kiosk_software_v1";
 const DB_NAME = "stella_kiosk_media_v2";
 const STORE = "files";
-const DOWNLOAD_CONCURRENCY = 4;
+const DOWNLOAD_CONCURRENCY = 6;
 
 export type CachedState = {
   manifest: KioskManifest;
@@ -31,16 +31,20 @@ type StoredFile = {
   blob: Blob;
 };
 
-let objectUrls: string[] = [];
+/** Live blob URLs reused across syncs so images are not re-decoded every poll. */
+const liveBlobs = new Map<string, { hash: string; url: string }>();
 
-function revokeObjectUrls(urls: string[]) {
-  for (const u of urls) {
-    try {
-      URL.revokeObjectURL(u);
-    } catch {
-      /* ignore */
-    }
+function revokeUrl(url: string) {
+  try {
+    URL.revokeObjectURL(url);
+  } catch {
+    /* ignore */
   }
+}
+
+function revokeAllLiveBlobs() {
+  for (const row of liveBlobs.values()) revokeUrl(row.url);
+  liveBlobs.clear();
 }
 
 let dbPromise: Promise<IDBDatabase> | null = null;
@@ -225,28 +229,49 @@ export function setKnownSoftwareVersion(version: string) {
 async function buildFileMap(manifest: KioskManifest): Promise<{
   fileBlobs: Record<string, string>;
   complete: boolean;
+  rebuilt: boolean;
 }> {
-  const prevUrls = objectUrls;
-  objectUrls = [];
   const map: Record<string, string> = {};
   let complete = true;
+  let rebuilt = false;
   const files = manifest.files || [];
+  const keep = new Set(files.map((f) => f.id));
   const storedById = await idbGetMany(files.map((f) => f.id));
 
   for (const f of files) {
+    const expected = fileHash(f);
+    const live = liveBlobs.get(f.id);
+    if (live && live.hash === expected) {
+      map[f.id] = live.url;
+      continue;
+    }
+
     const stored = storedById.get(f.id);
     if (blobLooksValid(stored, f) && stored?.blob) {
+      if (live) revokeUrl(live.url);
       const url = URL.createObjectURL(stored.blob);
-      objectUrls.push(url);
+      liveBlobs.set(f.id, { hash: expected, url });
       map[f.id] = url;
+      rebuilt = true;
     } else {
       complete = false;
+      if (live) {
+        revokeUrl(live.url);
+        liveBlobs.delete(f.id);
+        rebuilt = true;
+      }
     }
   }
 
-  // Revoke after new URLs exist so React can swap without flash of broken blobs
-  revokeObjectUrls(prevUrls);
-  return { fileBlobs: map, complete };
+  for (const [id, row] of [...liveBlobs.entries()]) {
+    if (!keep.has(id)) {
+      revokeUrl(row.url);
+      liveBlobs.delete(id);
+      rebuilt = true;
+    }
+  }
+
+  return { fileBlobs: map, complete, rebuilt };
 }
 
 /** True when local IndexedDB has every file from the saved manifest. */
@@ -284,6 +309,10 @@ export async function loadLocalCache(_serverUrl?: string): Promise<CachedState |
   }
 }
 
+export function getStoredFingerprint(): string | null {
+  return loadManifestOnly()?.syncFingerprint || null;
+}
+
 /** Lightweight check — no media download */
 export async function checkUpdates(
   config: KioskConfig,
@@ -317,14 +346,29 @@ async function mapPool<T, R>(items: T[], limit: number, fn: (item: T) => Promise
   return out;
 }
 
+export type SyncProgress = {
+  done: number;
+  total: number;
+  downloading: number;
+};
+
 /**
- * Pull manifest + media from server, persist to localStorage + IndexedDB.
- * Skips files whose hash already matches local cache.
+ * Pull missing media from server into IndexedDB. Already-cached files stay local.
+ * Does not rebuild blob URLs / React state when nothing new was downloaded.
  */
-export async function syncContent(config: KioskConfig): Promise<{
+export async function syncContent(
+  config: KioskConfig,
+  opts?: {
+    onProgress?: (p: SyncProgress) => void;
+    /** Skip network if local fingerprint already matches and cache is complete */
+    knownFingerprint?: string | null;
+  }
+): Promise<{
   state: CachedState | null;
   syncStatus: SyncStatus;
   syncMessage: string | null;
+  /** True when fileBlobs / manifest on screen should be replaced */
+  changed: boolean;
 }> {
   try {
     const res = await fetch(`${config.serverUrl}/api/kiosks/${config.kioskId}/manifest`, {
@@ -335,23 +379,46 @@ export async function syncContent(config: KioskConfig): Promise<{
         state: null,
         syncStatus: "error",
         syncMessage: `manifest ${res.status}`,
+        changed: false,
       };
     }
 
     const manifest = (await res.json()) as KioskManifest;
+    const remoteFp = fingerprintOf(manifest);
     const files = manifest.files || [];
+    const localMeta = loadManifestOnly();
+
+    // Fast path: same content already fully on disk — do not touch blob URLs
+    if (
+      opts?.knownFingerprint &&
+      opts.knownFingerprint === remoteFp &&
+      localMeta?.syncFingerprint === remoteFp &&
+      (await isLocalCacheComplete(manifest))
+    ) {
+      const cached = await loadLocalCache();
+      return {
+        state: cached,
+        syncStatus: "ok",
+        syncMessage: null,
+        changed: false,
+      };
+    }
+
     const keep = new Set(files.map((f) => f.id));
     const base = config.serverUrl.replace(/\/$/, "");
+    const storedById = await idbGetMany(files.map((f) => f.id));
 
-    const results = await mapPool(files, DOWNLOAD_CONCURRENCY, async (file) => {
-      const existing = await idbGet(file.id);
-      if (blobLooksValid(existing, file)) {
-        return null as string | null;
-      }
+    const missing = files.filter((file) => !blobLooksValid(storedById.get(file.id), file));
+    const total = files.length;
+    let done = total - missing.length;
+    opts?.onProgress?.({ done, total, downloading: missing.length });
 
+    let downloaded = 0;
+    const results = await mapPool(missing, DOWNLOAD_CONCURRENCY, async (file) => {
       const url = file.url.startsWith("http") ? file.url : `${base}${file.url}`;
       try {
-        const fr = await fetch(url, { cache: "no-store", mode: "cors" });
+        // Prefer HTTP cache if Edge still has the bytes; IDB is the source of truth after save
+        const fr = await fetch(url, { cache: "force-cache", mode: "cors" });
         if (!fr.ok) return `${file.filename || file.id} (${fr.status})`;
         const blob = await fr.blob();
         if (blob.size < 32) return `${file.filename || file.id} (empty body)`;
@@ -361,7 +428,14 @@ export async function syncContent(config: KioskConfig): Promise<{
           mimeType: file.mimeType || blob.type || "application/octet-stream",
           blob,
         });
-        return null;
+        downloaded += 1;
+        done += 1;
+        opts?.onProgress?.({
+          done,
+          total,
+          downloading: Math.max(0, missing.length - downloaded),
+        });
+        return null as string | null;
       } catch (e) {
         return `${file.filename || file.id}: ${e instanceof Error ? e.message : "fetch failed"}`;
       }
@@ -369,23 +443,29 @@ export async function syncContent(config: KioskConfig): Promise<{
 
     const failed = results.filter((x): x is string => Boolean(x));
 
-    const prev = loadManifestOnly();
-    if (prev?.manifest?.files) {
-      for (const f of prev.manifest.files) {
+    if (localMeta?.manifest?.files) {
+      for (const f of localMeta.manifest.files) {
         if (!keep.has(f.id)) await idbDelete(f.id);
       }
     }
 
     const syncedAt = new Date().toISOString();
     saveManifestOnly(manifest, syncedAt);
-    const { fileBlobs, complete } = await buildFileMap(manifest);
+    const { fileBlobs, complete, rebuilt } = await buildFileMap(manifest);
     const state: CachedState = {
       manifest,
       fileBlobs,
       syncedAt,
-      syncFingerprint: fingerprintOf(manifest),
+      syncFingerprint: remoteFp,
       complete,
     };
+
+    const changed =
+      rebuilt ||
+      downloaded > 0 ||
+      failed.length > 0 ||
+      localMeta?.syncFingerprint !== remoteFp ||
+      !localMeta;
 
     if (failed.length || !complete) {
       return {
@@ -394,15 +474,22 @@ export async function syncContent(config: KioskConfig): Promise<{
         syncMessage: failed.length
           ? `частично: не скачано ${failed.length} файл(ов)`
           : "локальный кэш неполный",
+        changed: true,
       };
     }
 
-    return { state, syncStatus: "ok", syncMessage: null };
+    return {
+      state,
+      syncStatus: "ok",
+      syncMessage: downloaded > 0 ? `сохранено локально · ${total} файл(ов)` : null,
+      changed,
+    };
   } catch (e) {
     return {
       state: null,
       syncStatus: "error",
       syncMessage: e instanceof Error ? e.message : "sync failed",
+      changed: false,
     };
   }
 }
@@ -452,8 +539,7 @@ export function mediaUrl(
 
 /** Dev helper — not required at runtime */
 export async function clearMediaCache() {
-  revokeObjectUrls(objectUrls);
-  objectUrls = [];
+  revokeAllLiveBlobs();
   await idbClear();
   localStorage.removeItem(MANIFEST_KEY);
   localStorage.removeItem("stella_kiosk_cache_v1");

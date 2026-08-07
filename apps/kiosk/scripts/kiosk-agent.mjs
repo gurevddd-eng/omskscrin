@@ -678,6 +678,22 @@ Write-Output "ok:$user"
 }
 
 let edgeWatchBusy = false;
+const launchUiFlagPath = path.join(
+  process.env.ProgramData || "C:\\ProgramData",
+  "StellaKiosk",
+  "LAUNCH_UI"
+);
+
+function consumeLaunchUiFlag() {
+  try {
+    if (!fs.existsSync(launchUiFlagPath)) return false;
+    fs.unlinkSync(launchUiFlagPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function watchEdgeUi() {
   if (edgeWatchBusy) return;
   if (isStopRequested()) {
@@ -686,9 +702,14 @@ async function watchEdgeUi() {
   }
   edgeWatchBusy = true;
   try {
+    const forceLaunch = consumeLaunchUiFlag();
     const running = await isEdgeKioskRunning();
-    if (!running) {
-      console.warn("[stella-agent] Edge UI missing — restarting (close only from admin)");
+    if (forceLaunch || !running) {
+      console.warn(
+        forceLaunch
+          ? "[stella-agent] LAUNCH_UI flag — starting Edge"
+          : "[stella-agent] Edge UI missing — restarting (close only from admin)"
+      );
       relaunchEdgeUi();
     }
     await ensureKeyBlockRunning();
@@ -918,8 +939,8 @@ if (isLockdownSuppressed() || !readBlockKeyboardFlag()) {
 }
 writeBlockKeyboardFlag(wantKeyBlock);
 applyOsLockdownPolicies(wantKeyBlock);
-setTimeout(() => void watchEdgeUi(), 5_000);
-setInterval(() => void watchEdgeUi(), 30_000);
+setTimeout(() => void watchEdgeUi(), 2_000);
+setInterval(() => void watchEdgeUi(), 8_000);
 console.log(`[stella-agent] Edge UI watchdog on (interactive session); stop flag ${stopFlagPath}`);
 console.log(`[stella-agent] OS keyboard block (all keys + Keyboard Filter CAD) enabled=${wantKeyBlock}`);
 

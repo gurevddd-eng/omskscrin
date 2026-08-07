@@ -361,21 +361,29 @@ try {
   $uiKick = Invoke-Command -Session $session -ScriptBlock {
     param($Port)
     $ErrorActionPreference = "Continue"
+    $root = Join-Path $env:ProgramData "StellaKiosk"
+    Remove-Item -Path (Join-Path $root "STOPPED") -Force -ErrorAction SilentlyContinue
+    Remove-Item -Path (Join-Path $root "SOFTWARE_DISABLED") -Force -ErrorAction SilentlyContinue
+    try {
+      Set-Content -Path (Join-Path $root "LAUNCH_UI") -Value ([string][DateTimeOffset]::UtcNow.ToUnixTimeSeconds()) -Encoding ascii -Force
+    } catch {}
+
     $edge = @(
       "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe",
       "$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe"
     ) | Where-Object { Test-Path $_ } | Select-Object -First 1
-    if (-not $edge) { return "no-edge" }
+    if (-not $edge) { return "no-edge; LAUNCH_UI set for agent" }
 
     $proc = Get-CimInstance Win32_Process -Filter "Name = 'explorer.exe'" -ErrorAction SilentlyContinue | Select-Object -First 1
-    if (-not $proc) { return "no-explorer (log on to kiosk PC)" }
+    if (-not $proc) { return "no-explorer (log on to kiosk PC); LAUNCH_UI set" }
     $owner = Invoke-CimMethod -InputObject $proc -MethodName GetOwner -ErrorAction SilentlyContinue
-    if (-not $owner -or [string]::IsNullOrWhiteSpace($owner.User)) { return "no-console-user" }
+    if (-not $owner -or [string]::IsNullOrWhiteSpace($owner.User)) { return "no-console-user; LAUNCH_UI set" }
     $user = if ($owner.Domain) { "$($owner.Domain)\$($owner.User)" } else { $owner.User }
 
-    $profile = Join-Path $env:ProgramData "StellaKiosk\edge-profile"
+    $profile = Join-Path $root "edge-profile"
     New-Item -ItemType Directory -Force -Path $profile | Out-Null
-    $uiArgs = "--user-data-dir=`"$profile`" --kiosk http://127.0.0.1:$Port/ --edge-kiosk-type=fullscreen --no-first-run --disable-session-crashed-bubble --noerrdialogs --check-for-update-interval=31536000 --disable-features=msEdgeSidebar,TranslateUI,InfiniteSessionRestore,msVisualSearch --disable-pinch --overscroll-history-navigation=0"
+    $bust = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+    $uiArgs = "--user-data-dir=`"$profile`" --kiosk http://127.0.0.1:$Port/?nocache=$bust --edge-kiosk-type=fullscreen --no-first-run --disable-session-crashed-bubble --noerrdialogs --check-for-update-interval=31536000 --disable-features=msEdgeSidebar,TranslateUI,InfiniteSessionRestore,msVisualSearch --disable-pinch --overscroll-history-navigation=0 --disk-cache-size=1"
     $once = "StellaKioskStartNow"
     $job = Start-Job -ScriptBlock {
       param($EdgePath, $Args, $Once, $User)
@@ -388,10 +396,10 @@ try {
       return "Edge started as $User"
     } -ArgumentList $edge, $uiArgs, $once, $user
 
-    if (-not (Wait-Job $job -Timeout 20)) {
+    if (-not (Wait-Job $job -Timeout 8)) {
       Stop-Job $job -ErrorAction SilentlyContinue
       Remove-Job $job -Force -ErrorAction SilentlyContinue
-      return "Edge kick timed out for $user (agent will retry)"
+      return "Edge kick deferred for $user; agent LAUNCH_UI set"
     }
     try {
       $msg = Receive-Job $job -ErrorAction Stop
@@ -399,7 +407,7 @@ try {
       return $msg
     } catch {
       Remove-Job $job -Force -ErrorAction SilentlyContinue
-      return "Edge kick failed: $($_.Exception.Message)"
+      return "Edge kick failed: $($_.Exception.Message); agent LAUNCH_UI set"
     }
   } -ArgumentList $UiPort
   Write-Host "UI kick: $uiKick"

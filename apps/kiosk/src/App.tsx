@@ -120,40 +120,52 @@ function RailClock({
 
 function StarLogo() {
   return (
-    <svg className="rail__star" viewBox="0 0 64 64" aria-hidden>
+    <svg className="rail__star" viewBox="0 0 80 80" aria-hidden>
       <defs>
-        <linearGradient id="star-face" x1="18" y1="8" x2="46" y2="58" gradientUnits="userSpaceOnUse">
-          <stop offset="0%" stopColor="#ff4d4d" />
-          <stop offset="42%" stopColor="#e30613" />
-          <stop offset="100%" stopColor="#9e0410" />
+        <linearGradient id="star-metal" x1="40" y1="4" x2="40" y2="76" gradientUnits="userSpaceOnUse">
+          <stop offset="0%" stopColor="#ffe9a8" />
+          <stop offset="45%" stopColor="#e0b33a" />
+          <stop offset="100%" stopColor="#9a7410" />
         </linearGradient>
-        <linearGradient id="star-rim" x1="32" y1="2" x2="32" y2="62" gradientUnits="userSpaceOnUse">
-          <stop offset="0%" stopColor="#ffe08a" />
-          <stop offset="55%" stopColor="#d4a017" />
-          <stop offset="100%" stopColor="#8a6a12" />
+        <linearGradient id="star-crimson" x1="22" y1="10" x2="58" y2="70" gradientUnits="userSpaceOnUse">
+          <stop offset="0%" stopColor="#ff5a5a" />
+          <stop offset="40%" stopColor="#e30613" />
+          <stop offset="100%" stopColor="#8f000c" />
         </linearGradient>
-        <filter id="star-soft" x="-50%" y="-50%" width="200%" height="200%">
-          <feDropShadow dx="0" dy="2" stdDeviation="2.2" floodColor="#e30613" floodOpacity="0.65" />
-        </filter>
+        <radialGradient id="star-core" cx="40" cy="38" r="14" gradientUnits="userSpaceOnUse">
+          <stop offset="0%" stopColor="#fff6c8" stopOpacity="0.95" />
+          <stop offset="55%" stopColor="#ffd36a" stopOpacity="0.55" />
+          <stop offset="100%" stopColor="#ffd36a" stopOpacity="0" />
+        </radialGradient>
       </defs>
-      <g className="rail__star-body" filter="url(#star-soft)">
+
+      <g className="rail__star-rays" aria-hidden>
+        <path
+          d="M40 6v10M40 64v10M6 40h10M64 40h10M16.5 16.5l7 7M56.5 56.5l7 7M63.5 16.5l-7 7M23.5 56.5l-7 7"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2.2"
+          strokeLinecap="round"
+        />
+      </g>
+
+      <g className="rail__star-body">
         <path
           className="rail__star-rim"
-          fill="url(#star-rim)"
-          d="M32 3.2l8.1 19.8H62L43.9 35.2l6.1 20.6L32 43.4 14 55.8l6.1-20.6L2 23H23.9L32 3.2z"
+          fill="url(#star-metal)"
+          d="M40 5l9.2 22.4H74L53.6 41.2l6.8 23.2L40 50.2 19.6 64.4l6.8-23.2L6 27.4h24.8L40 5z"
         />
         <path
           className="rail__star-face"
-          fill="url(#star-face)"
-          d="M32 8.4l6.4 15.6H56l-14.2 10.3 5.1 17.2L32 41.2 17.1 51.5l5.1-17.2L8 24h17.6L32 8.4z"
+          fill="url(#star-crimson)"
+          d="M40 12.5l7.1 17.4H67l-16.1 11.7 5.8 19.5L40 48.8 23.3 61.1l5.8-19.5L13 29.9h19.9L40 12.5z"
         />
         <path
           className="rail__star-sheen"
-          fill="rgba(255,255,255,0.28)"
-          d="M32 11.2l2.8 8.2 1.4.1H44l-6.2 4.5.4 1.6-8.2-5.1V11.2z"
+          d="M40 15.2l3.4 9.8h.2L52 25.2l-7.4 5.4.8 2.8L40 29.6V15.2z"
         />
+        <circle className="rail__star-core" cx="40" cy="38" r="14" fill="url(#star-core)" />
       </g>
-      <circle className="rail__star-flare" cx="32" cy="32" r="3.2" fill="#fff6c8" />
     </svg>
   );
 }
@@ -191,7 +203,26 @@ export function App() {
   const [syncStatus, setSyncStatus] = useState<SyncStatus>("unknown");
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
   const [screenKey, setScreenKey] = useState(0);
-  const [hiContrast, setHiContrast] = useState(false);
+  const [theme, setTheme] = useState<"light" | "dark">(() => {
+    try {
+      const saved = localStorage.getItem("stella_kiosk_theme_v1");
+      return saved === "dark" ? "dark" : "light";
+    } catch {
+      return "light";
+    }
+  });
+
+  const toggleTheme = useCallback(() => {
+    setTheme((prev) => {
+      const next = prev === "light" ? "dark" : "light";
+      try {
+        localStorage.setItem("stella_kiosk_theme_v1", next);
+      } catch {
+        /* ignore */
+      }
+      return next;
+    });
+  }, []);
   const [nativeShell, setNativeShell] = useState(false);
   const [gameBusy, setGameBusy] = useState(false);
   const [gameError, setGameError] = useState<string | null>(null);
@@ -371,7 +402,14 @@ export function App() {
         return;
       }
 
-      const result = await syncContent(config!);
+      const result = await syncContent(config!, {
+        knownFingerprint: lastContentVersion,
+        onProgress: (p) => {
+          if (p.downloading <= 0) return;
+          setSyncStatus("unknown");
+          setSyncMessage(`загрузка на устройство ${p.done}/${p.total}`);
+        },
+      });
       if (stopped) return;
       forceFullSync = false;
 
@@ -385,10 +423,17 @@ export function App() {
         if (typeof result.state.manifest.blockKeyboard === "boolean") {
           setKeyboardBlocked(result.state.manifest.blockKeyboard);
         }
-        setState(result.state);
+        // Only remount media when files actually changed — otherwise UI reloads from "network"
+        if (result.changed || !haveUsableCache) {
+          setState(result.state);
+        }
         lastSyncStatus = result.syncStatus;
         setSyncStatus(result.syncStatus);
-        setSyncMessage(result.syncMessage);
+        setSyncMessage(
+          result.syncStatus === "ok" && result.state.complete
+            ? result.syncMessage || "локальный кэш"
+            : result.syncMessage
+        );
       } else {
         // Network/manifest failure: keep whatever is already on screen
         lastSyncStatus = haveUsableCache ? "ok" : "error";
@@ -432,6 +477,7 @@ export function App() {
         if (cached.complete) {
           lastSyncStatus = "ok";
           setSyncStatus("ok");
+          setSyncMessage("локальный кэш");
         }
       }
       await tickSync();
@@ -671,7 +717,6 @@ export function App() {
       <div className="rail__brand">
         <div className="rail__mark" aria-hidden>
           <StarLogo />
-          <span className="rail__mark-ring" />
         </div>
         <div className="rail__brand-text">
           <p className="rail__title">
@@ -732,10 +777,15 @@ export function App() {
       <div className="rail__foot">
         <button
           type="button"
-          className={`rail__contrast ${hiContrast ? "is-on" : ""}`}
-          onClick={() => setHiContrast((v) => !v)}
+          className="rail__theme"
+          onClick={toggleTheme}
+          aria-label={theme === "light" ? "Включить тёмную тему" : "Включить светлую тему"}
         >
-          Контраст
+          <span className="rail__theme-label">Тема</span>
+          <span className="rail__theme-value">{theme === "light" ? "Светлая" : "Тёмная"}</span>
+          <span className="rail__theme-switch" data-theme={theme} aria-hidden>
+            <span className="rail__theme-knob" />
+          </span>
         </button>
         <RailClock syncStatus={syncStatus} statusText={statusText} />
       </div>
@@ -800,7 +850,7 @@ export function App() {
   if (!exhibit && tab !== "timeline") {
     return (
       <div
-        className={`shell shell--empty ${hiContrast ? "is-contrast" : ""}`}
+        className={`shell shell--empty ${theme === "dark" ? "theme-dark" : "theme-light"}`}
         onPointerDown={bumpActivity}
       >
         {rail}
@@ -819,7 +869,7 @@ export function App() {
 
   return (
     <div
-      className={`shell shell--${tab} ${hasAds ? "shell--with-ads" : ""} ${hiContrast ? "is-contrast" : ""}`}
+      className={`shell shell--${tab} ${hasAds ? "shell--with-ads" : ""} ${theme === "dark" ? "theme-dark" : "theme-light"}`}
       onPointerDown={bumpActivity}
     >
       {rail}

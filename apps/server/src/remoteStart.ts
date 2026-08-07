@@ -122,7 +122,7 @@ async function runStartUiJob(id: string) {
   try {
     let lastStage: UiStartStage = "connecting";
     const result = await runDeployScript("remote-start", args, {
-      timeoutMs: 120_000,
+      timeoutMs: 60_000,
       onLine: (line) => {
         const stage = inferUiStartStage(line);
         if (stage && stage !== lastStage && stage !== "done") {

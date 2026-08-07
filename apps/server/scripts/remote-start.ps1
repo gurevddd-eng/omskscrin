@@ -50,12 +50,20 @@ $startBlock = {
     ) | Where-Object { Test-Path $_ } | Select-Object -First 1
   }
 
+  function Test-AgentHealthy([int]$Hp) {
+    try {
+      $h = Invoke-RestMethod -Uri "http://127.0.0.1:$Hp/health" -TimeoutSec 1
+      return [bool]$h.ok
+    } catch {
+      return $false
+    }
+  }
+
   $root = Join-Path $env:ProgramData "StellaKiosk"
   if (-not (Test-Path (Join-Path $root "agent.mjs"))) {
     throw "StellaKiosk not installed at $root. Install software first."
   }
 
-  # Allow Edge watchdog again after admin Start
   Remove-Item -Path (Join-Path $root "STOPPED") -Force -ErrorAction SilentlyContinue
   Remove-Item -Path (Join-Path $root "SOFTWARE_DISABLED") -Force -ErrorAction SilentlyContinue
 
@@ -64,34 +72,31 @@ $startBlock = {
     throw "Task $taskAgent missing. Install software first."
   }
 
-  # Restart agent (SYSTEM AtStartup task - always leave Enabled for reboot)
   try { Enable-ScheduledTask -TaskName $taskAgent -ErrorAction SilentlyContinue } catch {}
-  try { Stop-ScheduledTask -TaskName $taskAgent -ErrorAction SilentlyContinue } catch {}
-  Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" -ErrorAction SilentlyContinue | ForEach-Object {
-    if ($_.CommandLine -and ($_.CommandLine -like "*StellaKiosk*" -or $_.CommandLine -like "*agent.mjs*")) {
-      try { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } catch {}
-    }
-  }
-  # Drop temporary stop so watchdog may run Edge + keyblock
-  Remove-Item -Path (Join-Path $root "STOPPED") -Force -ErrorAction SilentlyContinue
-  Start-Sleep -Milliseconds 800
-  Start-ScheduledTask -TaskName $taskAgent -ErrorAction Stop
-
   foreach ($t in @("StellaKioskUI", "StellaKioskKeyBlock")) {
     try { Enable-ScheduledTask -TaskName $t -ErrorAction SilentlyContinue } catch {}
   }
 
-  $deadline = (Get-Date).AddSeconds(15)
-  $healthy = $false
-  while ((Get-Date) -lt $deadline) {
-    Start-Sleep -Milliseconds 800
-    try {
-      $h = Invoke-RestMethod -Uri "http://127.0.0.1:$HealthPort/health" -TimeoutSec 2
-      if ($h.ok) { $healthy = $true; break }
-    } catch {}
-  }
-  if (-not $healthy) {
-    throw "Agent task started but health :$HealthPort did not respond"
+  $alreadyHealthy = Test-AgentHealthy $HealthPort
+  if (-not $alreadyHealthy) {
+    # Cold start only — restarting a healthy agent was the main Start UI delay
+    try { Stop-ScheduledTask -TaskName $taskAgent -ErrorAction SilentlyContinue } catch {}
+    Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" -ErrorAction SilentlyContinue | ForEach-Object {
+      if ($_.CommandLine -and ($_.CommandLine -like "*StellaKiosk*" -or $_.CommandLine -like "*agent.mjs*")) {
+        try { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } catch {}
+      }
+    }
+    Start-Sleep -Milliseconds 400
+    Start-ScheduledTask -TaskName $taskAgent -ErrorAction Stop
+
+    $deadline = (Get-Date).AddSeconds(8)
+    while ((Get-Date) -lt $deadline) {
+      Start-Sleep -Milliseconds 350
+      if (Test-AgentHealthy $HealthPort) { $alreadyHealthy = $true; break }
+    }
+    if (-not $alreadyHealthy) {
+      throw "Agent task started but health :$HealthPort did not respond"
+    }
   }
 
   $edge = Find-Edge
@@ -100,11 +105,11 @@ $startBlock = {
   }
 
   New-Item -ItemType Directory -Force -Path (Join-Path $root "edge-profile") | Out-Null
-  $uiArgs = "--user-data-dir=`"$root\edge-profile`" --kiosk http://127.0.0.1:$Port/ --edge-kiosk-type=fullscreen --no-first-run --disable-session-crashed-bubble --noerrdialogs --check-for-update-interval=31536000 --disable-features=msEdgeSidebar,TranslateUI,InfiniteSessionRestore,msVisualSearch --disable-pinch --overscroll-history-navigation=0"
+  $bust = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+  $uiArgs = "--user-data-dir=`"$root\edge-profile`" --kiosk http://127.0.0.1:$Port/?nocache=$bust --edge-kiosk-type=fullscreen --no-first-run --disable-session-crashed-bubble --noerrdialogs --check-for-update-interval=31536000 --disable-features=msEdgeSidebar,TranslateUI,InfiniteSessionRestore,msVisualSearch --disable-pinch --overscroll-history-navigation=0 --disk-cache-size=1"
 
-  # Close previous kiosk Edge windows (best effort, never block)
   Get-CimInstance Win32_Process -Filter "Name = 'msedge.exe'" -ErrorAction SilentlyContinue | ForEach-Object {
-    if ($_.CommandLine -and $_.CommandLine -like "*127.0.0.1:$Port*") {
+    if ($_.CommandLine -and ($_.CommandLine -like "*127.0.0.1:$Port*" -or $_.CommandLine -like "*StellaKiosk\edge-profile*")) {
       try { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } catch {}
     }
   }
@@ -119,12 +124,16 @@ $startBlock = {
     Set-ScheduledTask -TaskName $taskUi -Action $actionUi -ErrorAction SilentlyContinue | Out-Null
   }
 
+  # Agent watchdog opens Edge immediately (avoids long WinRM scheduled-task hangs)
+  try {
+    Set-Content -Path (Join-Path $root "LAUNCH_UI") -Value ([string]$bust) -Encoding ascii -Force
+  } catch {}
+
   $consoleUser = Get-ConsoleUserId
   $once = "StellaKioskStartNow"
   Unregister-ScheduledTask -TaskName $once -Confirm:$false -ErrorAction SilentlyContinue
-  $launchHow = "queued via StellaKioskUI (agent watchdog)"
+  $launchHow = "signaled agent LAUNCH_UI"
 
-  # Interactive Edge start can hang under WinRM - hard timeout, agent watchdog will retry
   $launchJob = Start-Job -ScriptBlock {
     param($EdgePath, $Args, $Once, $ConsoleUser, $RunAsUser, $RunAsPassword, $TaskUi)
     $ErrorActionPreference = "Stop"
@@ -148,15 +157,15 @@ $startBlock = {
     return "AtLogOn task triggered (no console user)"
   } -ArgumentList $edge, $uiArgs, $once, $consoleUser, $RunAsUser, $RunAsPassword, $taskUi
 
-  if (Wait-Job -Job $launchJob -Timeout 25) {
+  if (Wait-Job -Job $launchJob -Timeout 8) {
     try {
       $launchHow = Receive-Job -Job $launchJob -ErrorAction Stop
     } catch {
-      $launchHow = "Edge launch error: $($_.Exception.Message); agent will retry"
+      $launchHow = "Edge task error: $($_.Exception.Message); agent LAUNCH_UI set"
     }
   } else {
     Stop-Job -Job $launchJob -ErrorAction SilentlyContinue
-    $launchHow = "Edge launch timed out (25s); agent watchdog will retry"
+    $launchHow = "Edge task deferred; agent LAUNCH_UI set"
   }
   Remove-Job -Job $launchJob -Force -ErrorAction SilentlyContinue
 
