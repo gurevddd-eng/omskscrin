@@ -173,7 +173,7 @@ export function TimelineAdminPage() {
     <PageShell
       section="Контент"
       title="Хроника"
-      description="Общие страницы годов для всех киосков. В меню слева — под основными разделами. До 8 картинок на страницу, без отступов."
+      description="Общие страницы годов для всех киосков. В меню слева — под основными разделами. Картинки по порядку сверху вниз, без отступов."
       banner={error ? <Alert tone="error">{error}</Alert> : null}
       actions={
         canEdit ? (
@@ -242,7 +242,11 @@ export function TimelineAdminPage() {
             </div>
 
             <p className="muted">
-              Картинки {page.imageIds.length}/{TIMELINE_MAX_IMAGES} — порядок сверху вниз на киоске
+              Картинки: {page.imageIds.length}
+              {page.imageIds.length >= TIMELINE_MAX_IMAGES
+                ? ` (лимит ${TIMELINE_MAX_IMAGES})`
+                : ""}{" "}
+              — порядок сверху вниз на киоске
             </p>
 
             <div className="timeline-admin__grid">

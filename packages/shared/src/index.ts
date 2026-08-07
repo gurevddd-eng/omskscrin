@@ -376,6 +376,7 @@ export interface TimelineDto {
   updatedAt: string;
 }
 
-export const TIMELINE_MAX_IMAGES = 8;
+/** Soft upper bound per timeline page (safety against accidental huge uploads) */
+export const TIMELINE_MAX_IMAGES = 100;
 
 export const ONLINE_THRESHOLD_MS = 2 * 60 * 1000;
