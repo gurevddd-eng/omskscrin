@@ -30,11 +30,11 @@ function contentPollSec(config: { syncIntervalSec: number }, errored: boolean) {
   return Math.max(30, Math.min(n, 600));
 }
 
-const NAV: { id: Tab; label: string; hint: string }[] = [
-  { id: "home", label: "Главная", hint: "Обложка" },
-  { id: "about", label: "Описание", hint: "Текст и ТТХ" },
-  { id: "gallery", label: "Галерея", hint: "Фотографии" },
-  { id: "video", label: "Видео", hint: "Ролик" },
+const NAV: { id: Tab; label: string }[] = [
+  { id: "home", label: "Главная" },
+  { id: "about", label: "Описание" },
+  { id: "gallery", label: "Галерея" },
+  { id: "video", label: "Видео" },
 ];
 
 function NavIcon({ id }: { id: Tab }) {
@@ -176,6 +176,12 @@ export function App() {
   const [galleryIdx, setGalleryIdx] = useState(0);
   const [timelinePageId, setTimelinePageId] = useState<string | null>(null);
   const gallerySwipe = useRef<{
+    id: number;
+    x: number;
+    y: number;
+    moved: boolean;
+  } | null>(null);
+  const timelineSwipe = useRef<{
     id: number;
     x: number;
     y: number;
@@ -530,6 +536,69 @@ export function App() {
     [galleryCount]
   );
 
+  const onTimelinePointerDown = useCallback(
+    (e: ReactPointerEvent<HTMLElement>) => {
+      if (timelinePages.length < 2) return;
+      if (e.pointerType === "mouse" && e.button !== 0) return;
+      timelineSwipe.current = { id: e.pointerId, x: e.clientX, y: e.clientY, moved: false };
+    },
+    [timelinePages.length]
+  );
+
+  const onTimelinePointerMove = useCallback((e: ReactPointerEvent<HTMLElement>) => {
+    const s = timelineSwipe.current;
+    if (!s || s.id !== e.pointerId) return;
+    const dx = e.clientX - s.x;
+    const dy = e.clientY - s.y;
+    if (Math.abs(dx) > 12 || Math.abs(dy) > 12) s.moved = true;
+  }, []);
+
+  const endTimelineSwipe = useCallback(
+    (e: ReactPointerEvent<HTMLElement>) => {
+      const s = timelineSwipe.current;
+      if (!s || s.id !== e.pointerId) return;
+      timelineSwipe.current = null;
+      if (timelinePages.length < 2) return;
+      const dx = e.clientX - s.x;
+      const dy = e.clientY - s.y;
+      // Horizontal page flip; ignore mostly-vertical scroll of the image stack
+      if (Math.abs(dx) < 56) return;
+      if (Math.abs(dx) < Math.abs(dy) * 1.15) return;
+      const curId = timelinePageId || timelinePages[0]?.id;
+      const idx = Math.max(
+        0,
+        timelinePages.findIndex((p) => p.id === curId)
+      );
+      const nextIdx =
+        dx < 0
+          ? (idx + 1) % timelinePages.length
+          : (idx - 1 + timelinePages.length) % timelinePages.length;
+      const next = timelinePages[nextIdx];
+      if (next) goTimeline(next.id);
+    },
+    [timelinePages, timelinePageId, goTimeline]
+  );
+
+  useEffect(() => {
+    function onWinUp(ev: PointerEvent) {
+      const s = timelineSwipe.current;
+      if (!s || s.id !== ev.pointerId) return;
+      // Synthetic target for shared end handler shape
+      endTimelineSwipe({
+        pointerId: ev.pointerId,
+        clientX: ev.clientX,
+        clientY: ev.clientY,
+        currentTarget: document.body,
+      } as unknown as ReactPointerEvent<HTMLElement>);
+    }
+    window.addEventListener("pointerup", onWinUp);
+    window.addEventListener("pointercancel", onWinUp);
+    return () => {
+      window.removeEventListener("pointerup", onWinUp);
+      window.removeEventListener("pointercancel", onWinUp);
+    };
+  }, [endTimelineSwipe]);
+
   const showWing =
     (tab !== "home" && tab !== "about" && tab !== "gallery" && tab !== "timeline") || hasAds;
 
@@ -617,21 +686,17 @@ export function App() {
       </div>
 
       <nav className="rail__nav" aria-label="Разделы">
-        {NAV.map((item, i) => (
+        {NAV.map((item) => (
           <button
             key={item.id}
             type="button"
             className={`rail__nav-btn ${tab === item.id ? "is-active" : ""}`}
             onClick={() => goTab(item.id)}
           >
-            <span className="rail__nav-idx">{String(i + 1).padStart(2, "0")}</span>
             <span className="rail__nav-icon">
               <NavIcon id={item.id} />
             </span>
-            <span className="rail__nav-copy">
-              <span className="rail__nav-label">{item.label}</span>
-              <span className="rail__nav-hint">{item.hint}</span>
-            </span>
+            <span className="rail__nav-label">{item.label}</span>
             <span className="rail__nav-mark" aria-hidden />
           </button>
         ))}
@@ -761,7 +826,14 @@ export function App() {
 
       <main className="stage">
         {tab === "timeline" && (
-          <section className="panel panel--timeline" key={`timeline-${activeTimeline?.id || "x"}-${screenKey}`}>
+          <section
+            className="panel panel--timeline"
+            key={`timeline-${activeTimeline?.id || "x"}-${screenKey}`}
+            onPointerDown={onTimelinePointerDown}
+            onPointerMove={onTimelinePointerMove}
+            onPointerUp={endTimelineSwipe}
+            onPointerCancel={endTimelineSwipe}
+          >
             {activeTimeline?.imageIds?.length ? (
               <div className="timeline-stack">
                 {activeTimeline.imageIds.map((id) => {
