@@ -134,6 +134,18 @@ $edgePol = "HKLM:\SOFTWARE\Policies\Microsoft\Edge"
 Set-PolicyDword $edgePol "VisualSearchEnabled" 0 ($Mode -eq "off")
 Set-PolicyDword $edgePol "QuickSearchShowMiniMenu" 0 ($Mode -eq "off")
 
+# Suppress Windows Update reboot prompts / auto-restart on kiosk
+$wuAu = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU"
+$wuPol = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate"
+$wuUx = "HKLM:\SOFTWARE\Microsoft\WindowsUpdate\UX\Settings"
+$storePol = "HKLM:\SOFTWARE\Policies\Microsoft\WindowsStore"
+Set-PolicyDword $wuAu "NoAutoRebootWithLoggedOnUsers" 1 ($Mode -eq "off")
+Set-PolicyDword $wuAu "NoAutoUpdate" 1 ($Mode -eq "off")
+Set-PolicyDword $wuAu "AUOptions" 2 ($Mode -eq "off")
+Set-PolicyDword $wuPol "SetDisableUXWUAccess" 1 ($Mode -eq "off")
+Set-PolicyDword $wuUx "RestartNotificationsAllowed2" 0 ($Mode -eq "off")
+Set-PolicyDword $storePol "AutoDownload" 2 ($Mode -eq "off")
+
 if ($Mode -eq "off") {
   Apply-WekfBlocks $false | Out-Null
   foreach ($name in @("MsKeyboardFilter", "MsKeyboardFilterSvc")) {

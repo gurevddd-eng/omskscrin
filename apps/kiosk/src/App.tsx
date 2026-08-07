@@ -22,12 +22,12 @@ type Tab = "home" | "about" | "gallery" | "video" | "timeline";
 
 const AD_ROTATE_MS = 8000;
 
-/** Poll interval for content version checks. Caps high values in kiosk.json (e.g. 300). */
+/** Poll interval for content version checks. Honors kiosk.json (e.g. 300). */
 function contentPollSec(config: { syncIntervalSec: number }, errored: boolean) {
-  if (errored) return 15;
   const configured = Number(config.syncIntervalSec);
-  const n = Number.isFinite(configured) && configured > 0 ? configured : 20;
-  return Math.max(15, Math.min(n, 30));
+  const n = Number.isFinite(configured) && configured > 0 ? configured : 60;
+  if (errored) return Math.min(30, Math.max(15, n));
+  return Math.max(30, Math.min(n, 600));
 }
 
 const NAV: { id: Tab; label: string; hint: string }[] = [
@@ -95,28 +95,65 @@ function useClock() {
   };
 }
 
+/** Isolated so 1Hz clock ticks do not re-render the whole kiosk tree. */
+function RailClock({
+  syncStatus,
+  statusText,
+}: {
+  syncStatus: SyncStatus;
+  statusText: string;
+}) {
+  const { time, date } = useClock();
+  return (
+    <div className="rail__meta">
+      <strong className="rail__time">{time}</strong>
+      <span className="rail__date">{date}</span>
+      <span
+        className={`rail__sync is-${syncStatus === "ok" ? "ok" : syncStatus === "error" ? "err" : "wait"}`}
+        title={statusText}
+      >
+        {syncStatus === "ok" ? "онлайн" : syncStatus === "error" ? "офлайн" : "синхр."}
+      </span>
+    </div>
+  );
+}
+
 function StarLogo() {
   return (
     <svg className="rail__star" viewBox="0 0 64 64" aria-hidden>
       <defs>
-        <filter id="star-glow" x="-40%" y="-40%" width="180%" height="180%">
-          <feGaussianBlur in="SourceGraphic" stdDeviation="1.2" result="blur" />
-          <feMerge>
-            <feMergeNode in="blur" />
-            <feMergeNode in="SourceGraphic" />
-          </feMerge>
+        <linearGradient id="star-face" x1="18" y1="8" x2="46" y2="58" gradientUnits="userSpaceOnUse">
+          <stop offset="0%" stopColor="#ff4d4d" />
+          <stop offset="42%" stopColor="#e30613" />
+          <stop offset="100%" stopColor="#9e0410" />
+        </linearGradient>
+        <linearGradient id="star-rim" x1="32" y1="2" x2="32" y2="62" gradientUnits="userSpaceOnUse">
+          <stop offset="0%" stopColor="#ffe08a" />
+          <stop offset="55%" stopColor="#d4a017" />
+          <stop offset="100%" stopColor="#8a6a12" />
+        </linearGradient>
+        <filter id="star-soft" x="-50%" y="-50%" width="200%" height="200%">
+          <feDropShadow dx="0" dy="2" stdDeviation="2.2" floodColor="#e30613" floodOpacity="0.65" />
         </filter>
       </defs>
-      <g className="rail__star-twinkle" filter="url(#star-glow)">
+      <g className="rail__star-body" filter="url(#star-soft)">
         <path
-          fill="currentColor"
-          d="M32 4l7.4 18.2H60l-15 12.2 5.4 19.2L32 43.4 13.6 53.6l5.4-19.2L4 22.2h20.6L32 4z"
+          className="rail__star-rim"
+          fill="url(#star-rim)"
+          d="M32 3.2l8.1 19.8H62L43.9 35.2l6.1 20.6L32 43.4 14 55.8l6.1-20.6L2 23H23.9L32 3.2z"
         />
         <path
-          fill="#1a1a1a"
-          d="M32 18l3.2 8H44l-6.4 5 2.3 8.2L32 34.4l-7.9 4.8 2.3-8.2L20 26h8.8L32 18z"
+          className="rail__star-face"
+          fill="url(#star-face)"
+          d="M32 8.4l6.4 15.6H56l-14.2 10.3 5.1 17.2L32 41.2 17.1 51.5l5.1-17.2L8 24h17.6L32 8.4z"
+        />
+        <path
+          className="rail__star-sheen"
+          fill="rgba(255,255,255,0.28)"
+          d="M32 11.2l2.8 8.2 1.4.1H44l-6.2 4.5.4 1.6-8.2-5.1V11.2z"
         />
       </g>
+      <circle className="rail__star-flare" cx="32" cy="32" r="3.2" fill="#fff6c8" />
     </svg>
   );
 }
@@ -152,7 +189,6 @@ export function App() {
   const [nativeShell, setNativeShell] = useState(false);
   const [gameBusy, setGameBusy] = useState(false);
   const [gameError, setGameError] = useState<string | null>(null);
-  const { time, date } = useClock();
 
   const bumpActivity = useCallback(() => {
     (window as unknown as { __lastActive?: number }).__lastActive = Date.now();
@@ -180,11 +216,7 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    void loadConfig().then(async (cfg) => {
-      setConfig(cfg);
-      const cached = await loadLocalCache(cfg.serverUrl);
-      if (cached) setState(cached);
-    });
+    void loadConfig().then((cfg) => setConfig(cfg));
     setNativeShell(isTauriShell());
     void probeNativeShell().then(setNativeShell);
   }, []);
@@ -212,7 +244,7 @@ export function App() {
     let lastContentVersion: string | null = null;
     let lastExhibitVersion: string | null = null;
     let localIncomplete = true;
-    let forceFullSync = true;
+    let forceFullSync = false;
     /** Agent software version seen at session start — reload only if it changes (OTA). */
     let sessionAgentSoftware: string | null = null;
     let reloadArmed = false;
@@ -263,7 +295,7 @@ export function App() {
       const remoteFingerprint =
         updates?.syncFingerprint ??
         (updates
-          ? `${updates.contentVersion ?? "0"}|${updates.adsVersion ?? "0"}|${updates.settingsVersion ?? "0"}`
+          ? `${updates.contentVersion ?? "0"}|${updates.adsVersion ?? "0"}|${updates.settingsVersion ?? "0"}|${updates.timelineVersion ?? "0"}`
           : null);
 
       const offline = updates == null;
@@ -274,6 +306,29 @@ export function App() {
         remoteFingerprint != null &&
         localFingerprint != null &&
         remoteFingerprint !== localFingerprint;
+
+      // Settings-only fingerprint change: apply flags without rebuilding media blobs
+      if (serverDiffers && updates && lastContentVersion) {
+        const localParts = String(lastContentVersion).split("|");
+        const remoteParts = String(remoteFingerprint).split("|");
+        const contentSame = (localParts[0] || "0") === (remoteParts[0] || "0");
+        const adsSame = (localParts[1] || "0") === (remoteParts[1] || "0");
+        const timelineSame = (localParts[3] || "0") === (remoteParts[3] || "0");
+        // settings is index 2
+        if (contentSame && adsSame && timelineSame) {
+          lastContentVersion = remoteFingerprint;
+          forceFullSync = false;
+          setSyncStatus("ok");
+          setSyncMessage(null);
+          await sendHeartbeat(config!, {
+            contentVersion: lastExhibitVersion,
+            syncStatus: "ok",
+            syncMessage: null,
+          });
+          timer = setTimeout(() => void tickSync(), contentPollSec(config!, false) * 1000);
+          return;
+        }
+      }
 
       // Offline with a full local cache: keep UI as-is (do not re-fetch / revoke blob URLs)
       if (offline && haveUsableCache) {
@@ -392,7 +447,8 @@ export function App() {
       const timeout = (config?.idleTimeoutSec || 60) * 1000;
       if (Date.now() - last <= timeout) return;
       setTab((prev) => {
-        if (prev === "home") return prev;
+        // Chronicle pages stay open — visitors often read without touching the screen
+        if (prev === "home" || prev === "timeline") return prev;
         setScreenKey((k) => k + 1);
         return "home";
       });
@@ -483,14 +539,16 @@ export function App() {
 
   useEffect(() => {
     if (!state) return;
+    // Prefetch only what the user is likely to open next — not every timeline page.
+    const timelineActive = state.manifest.timelinePages?.find((p) => p.id === timelinePageId);
     const ids = [
       exhibit?.heroImageId,
-      ...(exhibit?.galleryIds || []),
-      ...(state.manifest.adIds || []),
-      ...(state.manifest.timelinePages || []).flatMap((p) => p.imageIds),
+      ...(exhibit?.galleryIds || []).slice(0, 4),
+      ...(state.manifest.adIds || []).slice(0, 2),
+      ...(timelineActive?.imageIds || []).slice(0, 3),
     ];
     prefetchImages(ids.map((id) => mediaUrl(state, id, serverUrl)));
-  }, [state, exhibit?.heroImageId, exhibit?.galleryIds, serverUrl]);
+  }, [state, exhibit?.heroImageId, exhibit?.galleryIds, serverUrl, timelinePageId]);
 
   useEffect(() => {
     if (adIds.length < 2) return;
@@ -579,19 +637,29 @@ export function App() {
         ))}
 
         {timelinePages.length > 0 ? (
-          <div className="rail__years" aria-label="Хроника">
-            {timelinePages.map((page) => (
-              <button
-                key={page.id}
-                type="button"
-                className={`rail__year-btn ${
-                  tab === "timeline" && activeTimeline?.id === page.id ? "is-active" : ""
-                }`}
-                onClick={() => goTimeline(page.id)}
-              >
-                {page.label}
-              </button>
-            ))}
+          <div className="rail__chronicle" aria-label="Хроника">
+            <div className="rail__chronicle-head">
+              <span className="rail__chronicle-kicker">Хроника</span>
+              <span className="rail__chronicle-rule" aria-hidden />
+            </div>
+            <div className="rail__years" role="list">
+              {timelinePages.map((page) => {
+                const active = tab === "timeline" && activeTimeline?.id === page.id;
+                return (
+                  <button
+                    key={page.id}
+                    type="button"
+                    role="listitem"
+                    className={`rail__year-btn ${active ? "is-active" : ""}`}
+                    aria-current={active ? "page" : undefined}
+                    onClick={() => goTimeline(page.id)}
+                  >
+                    <span className="rail__year-node" aria-hidden />
+                    <span className="rail__year-label">{page.label}</span>
+                  </button>
+                );
+              })}
+            </div>
           </div>
         ) : null}
       </nav>
@@ -604,16 +672,7 @@ export function App() {
         >
           Контраст
         </button>
-        <div className="rail__meta">
-          <strong className="rail__time">{time}</strong>
-          <span className="rail__date">{date}</span>
-          <span
-            className={`rail__sync is-${syncStatus === "ok" ? "ok" : syncStatus === "error" ? "err" : "wait"}`}
-            title={statusText}
-          >
-            {syncStatus === "ok" ? "онлайн" : syncStatus === "error" ? "офлайн" : "синхр."}
-          </span>
-        </div>
+        <RailClock syncStatus={syncStatus} statusText={statusText} />
       </div>
     </aside>
   );

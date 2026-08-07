@@ -334,14 +334,16 @@ export function KiosksPage() {
   const [search, setSearch] = useState("");
   const [refreshing, setRefreshing] = useState(false);
 
+  async function loadExhibits() {
+    setExhibits(await api<ExhibitOpt[]>("/api/exhibits?fields=id,title"));
+  }
+
   async function load(preferredId?: string | null) {
-    const [k, e, d] = await Promise.all([
+    const [k, d] = await Promise.all([
       api<KioskDto[]>("/api/kiosks"),
-      api<ExhibitOpt[]>("/api/exhibits"),
       api<DeployStatus>("/api/kiosks/deploy/status"),
     ]);
     setKiosks(k);
-    setExhibits(e);
     setDeploy(d);
     if (d.domainSuffix) setDomainSuffix(d.domainSuffix);
     setSelectedId((cur) => {
@@ -352,7 +354,7 @@ export function KiosksPage() {
   }
 
   useEffect(() => {
-    load().catch((e) => setError(e.message));
+    Promise.all([load(), loadExhibits()]).catch((e) => setError(e.message));
   }, []);
 
   const installingNow = useMemo(
@@ -370,7 +372,8 @@ export function KiosksPage() {
   const uiStopNow = useMemo(() => kiosks.some((k) => k.uiStopStatus === "running"), [kiosks]);
 
   useEffect(() => {
-    const ms = installingNow || policyClearNow || uiStartNow || uiStopNow ? 1500 : 5000;
+    const busy = installingNow || policyClearNow || uiStartNow || uiStopNow;
+    const ms = busy ? 2500 : 10000;
     const t = setInterval(() => {
       load().catch(() => undefined);
     }, ms);

@@ -430,33 +430,12 @@ async function checkSoftwareUpdate() {
 
 if (serverUrl) {
   console.log(`[stella-agent] heartbeat → ${serverUrl} every ${heartbeatSec}s`);
-  console.log(`[stella-agent] software check every ${softwareCheckSec}s (local=${softwareVersion})`);
+  console.log(`[stella-agent] software/settings check every ${softwareCheckSec}s (local=${softwareVersion})`);
   void pushHeartbeat();
   setInterval(() => void pushHeartbeat(), heartbeatSec * 1000);
-  // Delay first OTA check so UI stays up after boot
-  setTimeout(() => void checkSoftwareUpdate(), 45_000);
+  // Delay first OTA check so UI stays up after boot; also applies remote settings
+  setTimeout(() => void checkSoftwareUpdate(), 15_000);
   setInterval(() => void checkSoftwareUpdate(), softwareCheckSec * 1000);
-  // Settings (blockKeyboard) — lighter poll on heartbeat cadence
-  async function pullRemoteSettings() {
-    try {
-      const res = await fetch(
-        `${serverUrl}/api/kiosks/${encodeURIComponent(kioskId)}/updates?softwareVersion=${encodeURIComponent(softwareVersion)}`,
-        { cache: "no-store" }
-      );
-      if (!res.ok) return;
-      const data = await res.json();
-      if (typeof data.blockKeyboard === "boolean") {
-        applyBlockKeyboardSetting(data.blockKeyboard);
-      }
-      if (typeof data.softwareEnabled === "boolean") {
-        applySoftwareEnabledSetting(data.softwareEnabled);
-      }
-    } catch {
-      /* offline */
-    }
-  }
-  setTimeout(() => void pullRemoteSettings(), 8_000);
-  setInterval(() => void pullRemoteSettings(), heartbeatSec * 1000);
 } else {
   console.warn("[stella-agent] no serverUrl in kiosk.json — heartbeat/updates disabled");
 }
@@ -940,7 +919,7 @@ if (isLockdownSuppressed() || !readBlockKeyboardFlag()) {
 writeBlockKeyboardFlag(wantKeyBlock);
 applyOsLockdownPolicies(wantKeyBlock);
 setTimeout(() => void watchEdgeUi(), 5_000);
-setInterval(() => void watchEdgeUi(), 8_000);
+setInterval(() => void watchEdgeUi(), 30_000);
 console.log(`[stella-agent] Edge UI watchdog on (interactive session); stop flag ${stopFlagPath}`);
 console.log(`[stella-agent] OS keyboard block (all keys + Keyboard Filter CAD) enabled=${wantKeyBlock}`);
 

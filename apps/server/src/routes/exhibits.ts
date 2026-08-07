@@ -53,6 +53,25 @@ async function mapExhibit(id: string) {
     },
   });
   if (!e) return null;
+  return toExhibitDto(e);
+}
+
+function toExhibitDto(e: {
+  id: string;
+  title: string;
+  summary: string;
+  body: string;
+  specs: unknown;
+  heroImageId: string | null;
+  videoId: string | null;
+  audioId: string | null;
+  contentVersion: string;
+  updatedAt: Date;
+  gallery: { fileId: string; file: Parameters<typeof toFileDto>[0] }[];
+  heroImage: Parameters<typeof toFileDto>[0] | null;
+  video: Parameters<typeof toFileDto>[0] | null;
+  audio: Parameters<typeof toFileDto>[0] | null;
+}) {
   return {
     id: e.id,
     title: e.title,
@@ -73,9 +92,28 @@ async function mapExhibit(id: string) {
 }
 
 export async function registerExhibitRoutes(app: FastifyInstance) {
-  app.get("/api/exhibits", { preHandler: authenticate }, async () => {
-    const list = await prisma.exhibit.findMany({ orderBy: { updatedAt: "desc" } });
-    return Promise.all(list.map((e) => mapExhibit(e.id)));
+  app.get("/api/exhibits", { preHandler: authenticate }, async (request) => {
+    const q = request.query as { fields?: string };
+    const slim = q.fields === "id,title" || q.fields === "summary";
+
+    if (slim) {
+      const list = await prisma.exhibit.findMany({
+        orderBy: { updatedAt: "desc" },
+        select: { id: true, title: true },
+      });
+      return list;
+    }
+
+    const list = await prisma.exhibit.findMany({
+      orderBy: { updatedAt: "desc" },
+      include: {
+        gallery: { orderBy: { sortOrder: "asc" }, include: { file: true } },
+        heroImage: true,
+        video: true,
+        audio: true,
+      },
+    });
+    return list.map(toExhibitDto);
   });
 
   app.get("/api/exhibits/:id", { preHandler: authenticate }, async (request, reply) => {

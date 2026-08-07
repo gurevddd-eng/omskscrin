@@ -142,52 +142,59 @@ img {
 
 .rail__mark {
   position: relative;
-  width: 64px;
-  height: 64px;
+  width: 72px;
+  height: 72px;
   display: grid;
   place-items: center;
 }
 
 .rail__mark-ring {
   position: absolute;
-  inset: -6px;
+  inset: -8px;
   border-radius: 50%;
-  border: 1px solid rgba(227, 6, 19, 0.35);
-  box-shadow: 0 0 0 6px rgba(227, 6, 19, 0.06);
+  border: 1px solid rgba(227, 6, 19, 0.45);
+  box-shadow:
+    0 0 0 7px rgba(227, 6, 19, 0.08),
+    inset 0 0 18px rgba(227, 6, 19, 0.12);
   pointer-events: none;
-  animation: ring-pulse 3.6s ease-in-out infinite;
+  animation: ring-pulse 4.8s ease-in-out infinite;
 }
 
 @keyframes ring-pulse {
   0%,
   100% {
-    opacity: 0.55;
+    opacity: 0.7;
     transform: scale(1);
   }
   50% {
     opacity: 1;
-    transform: scale(1.04);
+    transform: scale(1.05);
   }
 }
 
 .rail__star {
-  width: 52px;
-  height: 52px;
-  filter: drop-shadow(0 8px 18px rgba(227, 6, 19, 0.45));
-  animation: star-in 0.7s var(--ease) both;
+  width: 60px;
+  height: 60px;
   position: relative;
   z-index: 1;
+  overflow: visible;
+  animation: star-in 0.85s var(--ease) both;
 }
 
-.rail__star-twinkle {
+.rail__star-body {
   transform-origin: 32px 32px;
-  animation: star-twinkle 3.8s ease-in-out 0.7s infinite;
+  animation: star-breathe 5.2s ease-in-out 0.85s infinite;
+}
+
+.rail__star-flare {
+  transform-origin: 32px 32px;
+  animation: star-flare 2.8s ease-in-out 1s infinite;
 }
 
 @keyframes star-in {
   from {
     opacity: 0;
-    transform: scale(0.86) rotate(-8deg);
+    transform: scale(0.78) rotate(-12deg);
   }
   to {
     opacity: 1;
@@ -195,24 +202,36 @@ img {
   }
 }
 
-@keyframes star-twinkle {
+@keyframes star-breathe {
   0%,
   100% {
-    opacity: 0.7;
-    transform: scale(0.96);
-  }
-  35% {
-    opacity: 1;
-    transform: scale(1.05);
+    transform: scale(1) rotate(0deg);
+    filter: drop-shadow(0 0 6px rgba(227, 6, 19, 0.35));
   }
   50% {
-    opacity: 0.82;
-    transform: scale(1);
+    transform: scale(1.06) rotate(2deg);
+    filter: drop-shadow(0 0 16px rgba(255, 70, 70, 0.75));
   }
-  68% {
+}
+
+@keyframes star-flare {
+  0%,
+  100% {
+    opacity: 0.55;
+    transform: scale(0.85);
+  }
+  50% {
     opacity: 1;
-    transform: scale(1.03);
+    transform: scale(1.25);
   }
+}
+
+.is-contrast .rail__star-rim {
+  fill: #ffd54a;
+}
+
+.is-contrast .rail__star-face {
+  fill: #ff2a2a;
 }
 
 .rail__brand-text {
@@ -279,36 +298,151 @@ img {
   overflow: auto;
 }
 
+.rail__chronicle {
+  margin-top: 16px;
+  padding: 12px 6px 8px;
+  border-radius: 14px;
+  background:
+    linear-gradient(180deg, rgba(227, 6, 19, 0.1) 0%, rgba(255, 255, 255, 0.02) 38%, transparent 100%),
+    rgba(0, 0, 0, 0.22);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+}
+
+.rail__chronicle-head {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.rail__chronicle-kicker {
+  font-family: var(--font-ui);
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.62);
+}
+
+.rail__chronicle-rule {
+  display: block;
+  width: 36px;
+  height: 2px;
+  border-radius: 99px;
+  background: linear-gradient(90deg, transparent, var(--red), transparent);
+}
+
 .rail__years {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 2px;
-  margin-top: 14px;
-  padding-top: 12px;
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 2px 0 4px;
+}
+
+.rail__years::before {
+  content: "";
+  position: absolute;
+  top: 14px;
+  bottom: 14px;
+  left: 14px;
+  width: 2px;
+  border-radius: 99px;
+  background: linear-gradient(
+    180deg,
+    rgba(227, 6, 19, 0.15),
+    rgba(227, 6, 19, 0.55) 20%,
+    rgba(227, 6, 19, 0.55) 80%,
+    rgba(227, 6, 19, 0.15)
+  );
+  pointer-events: none;
 }
 
 .rail__year-btn {
-  text-align: center;
-  padding: 10px 8px;
+  position: relative;
+  display: grid;
+  grid-template-columns: 20px 1fr;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 6px 8px 6px 4px;
   border-radius: 10px;
+  text-align: left;
+  transition:
+    color 0.2s var(--ease),
+    background 0.2s var(--ease),
+    transform 0.2s var(--ease);
+}
+
+.rail__year-node {
+  position: relative;
+  z-index: 1;
+  width: 12px;
+  height: 12px;
+  margin-left: 5px;
+  border-radius: 50%;
+  background: #2a2a2a;
+  box-shadow:
+    0 0 0 2px rgba(18, 18, 18, 0.95),
+    inset 0 0 0 1.5px rgba(255, 255, 255, 0.28);
+  transition:
+    background 0.2s var(--ease),
+    box-shadow 0.2s var(--ease),
+    transform 0.2s var(--ease);
+}
+
+.rail__year-label {
   font-family: var(--font-display);
-  font-size: 1.35rem;
+  font-size: 1.42rem;
   font-weight: 700;
-  letter-spacing: 0.06em;
-  color: rgba(255, 255, 255, 0.55);
-  transition: color 0.15s ease, background 0.15s ease;
+  letter-spacing: 0.08em;
+  line-height: 1;
+  color: rgba(255, 255, 255, 0.48);
+  transition: color 0.2s var(--ease);
 }
 
 .rail__year-btn:hover {
-  color: #fff;
   background: rgba(255, 255, 255, 0.04);
 }
 
-.rail__year-btn.is-active {
+.rail__year-btn:hover .rail__year-label {
   color: #fff;
-  background: rgba(227, 6, 19, 0.22);
-  box-shadow: inset 0 0 0 1px rgba(227, 6, 19, 0.45);
+}
+
+.rail__year-btn:hover .rail__year-node {
+  background: rgba(227, 6, 19, 0.55);
+  box-shadow:
+    0 0 0 2px rgba(18, 18, 18, 0.95),
+    0 0 10px rgba(227, 6, 19, 0.35);
+}
+
+.rail__year-btn.is-active {
+  background: linear-gradient(90deg, rgba(227, 6, 19, 0.28), rgba(227, 6, 19, 0.08));
+  box-shadow: inset 0 0 0 1px rgba(227, 6, 19, 0.4);
+}
+
+.rail__year-btn.is-active .rail__year-label {
+  color: #fff;
+  text-shadow: 0 0 18px rgba(227, 6, 19, 0.35);
+}
+
+.rail__year-btn.is-active .rail__year-node {
+  background: var(--red);
+  transform: scale(1.15);
+  box-shadow:
+    0 0 0 2px rgba(18, 18, 18, 0.95),
+    0 0 0 4px rgba(227, 6, 19, 0.22),
+    0 0 14px rgba(227, 6, 19, 0.55);
+}
+
+.is-contrast .rail__chronicle {
+  background: #000;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.2);
+}
+
+.is-contrast .rail__year-btn.is-active {
+  background: rgba(255, 42, 42, 0.28);
 }
 
 /* Timeline stack — full-bleed images, no gaps */
@@ -1650,7 +1784,8 @@ img {
 @media (prefers-reduced-motion: reduce) {
   .home-hero__img,
   .rail__star,
-  .rail__star-twinkle,
+  .rail__star-body,
+  .rail__star-flare,
   .rail__mark-ring,
   .panel,
   .wing__inner,

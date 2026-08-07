@@ -43,18 +43,36 @@ function revokeObjectUrls(urls: string[]) {
   }
 }
 
+let dbPromise: Promise<IDBDatabase> | null = null;
+
 function openDb(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, 1);
-    req.onupgradeneeded = () => {
-      const db = req.result;
-      if (!db.objectStoreNames.contains(STORE)) {
-        db.createObjectStore(STORE, { keyPath: "id" });
-      }
-    };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error || new Error("indexedDB open failed"));
-  });
+  if (!dbPromise) {
+    dbPromise = new Promise((resolve, reject) => {
+      const req = indexedDB.open(DB_NAME, 1);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(STORE)) {
+          db.createObjectStore(STORE, { keyPath: "id" });
+        }
+      };
+      req.onsuccess = () => {
+        const db = req.result;
+        db.onclose = () => {
+          dbPromise = null;
+        };
+        db.onversionchange = () => {
+          db.close();
+          dbPromise = null;
+        };
+        resolve(db);
+      };
+      req.onerror = () => {
+        dbPromise = null;
+        reject(req.error || new Error("indexedDB open failed"));
+      };
+    });
+  }
+  return dbPromise;
 }
 
 function idbReq<T>(req: IDBRequest<T>): Promise<T> {
@@ -66,38 +84,37 @@ function idbReq<T>(req: IDBRequest<T>): Promise<T> {
 
 async function idbGet(id: string): Promise<StoredFile | undefined> {
   const db = await openDb();
-  try {
-    return await idbReq(db.transaction(STORE, "readonly").objectStore(STORE).get(id));
-  } finally {
-    db.close();
-  }
+  return idbReq(db.transaction(STORE, "readonly").objectStore(STORE).get(id));
+}
+
+async function idbGetMany(ids: string[]): Promise<Map<string, StoredFile>> {
+  const out = new Map<string, StoredFile>();
+  if (!ids.length) return out;
+  const db = await openDb();
+  const tx = db.transaction(STORE, "readonly");
+  const store = tx.objectStore(STORE);
+  await Promise.all(
+    ids.map(async (id) => {
+      const row = await idbReq(store.get(id));
+      if (row) out.set(id, row as StoredFile);
+    })
+  );
+  return out;
 }
 
 async function idbPut(file: StoredFile): Promise<void> {
   const db = await openDb();
-  try {
-    await idbReq(db.transaction(STORE, "readwrite").objectStore(STORE).put(file));
-  } finally {
-    db.close();
-  }
+  await idbReq(db.transaction(STORE, "readwrite").objectStore(STORE).put(file));
 }
 
 async function idbDelete(id: string): Promise<void> {
   const db = await openDb();
-  try {
-    await idbReq(db.transaction(STORE, "readwrite").objectStore(STORE).delete(id));
-  } finally {
-    db.close();
-  }
+  await idbReq(db.transaction(STORE, "readwrite").objectStore(STORE).delete(id));
 }
 
 async function idbClear(): Promise<void> {
   const db = await openDb();
-  try {
-    await idbReq(db.transaction(STORE, "readwrite").objectStore(STORE).clear());
-  } finally {
-    db.close();
-  }
+  await idbReq(db.transaction(STORE, "readwrite").objectStore(STORE).clear());
 }
 
 /** Same format as server syncFingerprint: content|ads|settings|timeline */
@@ -213,9 +230,11 @@ async function buildFileMap(manifest: KioskManifest): Promise<{
   objectUrls = [];
   const map: Record<string, string> = {};
   let complete = true;
+  const files = manifest.files || [];
+  const storedById = await idbGetMany(files.map((f) => f.id));
 
-  for (const f of manifest.files || []) {
-    const stored = await idbGet(f.id);
+  for (const f of files) {
+    const stored = storedById.get(f.id);
     if (blobLooksValid(stored, f) && stored?.blob) {
       const url = URL.createObjectURL(stored.blob);
       objectUrls.push(url);
@@ -234,9 +253,10 @@ async function buildFileMap(manifest: KioskManifest): Promise<{
 export async function isLocalCacheComplete(manifest?: KioskManifest | null): Promise<boolean> {
   const m = manifest || loadManifestOnly()?.manifest;
   if (!m) return false;
-  for (const f of m.files || []) {
-    const stored = await idbGet(f.id);
-    if (!blobLooksValid(stored, f)) return false;
+  const files = m.files || [];
+  const storedById = await idbGetMany(files.map((f) => f.id));
+  for (const f of files) {
+    if (!blobLooksValid(storedById.get(f.id), f)) return false;
   }
   return true;
 }

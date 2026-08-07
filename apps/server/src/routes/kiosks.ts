@@ -8,6 +8,7 @@ import {
   broadcastKioskRemoved,
   broadcastKioskUpsert,
   broadcastSnapshot,
+  monitorClientCount,
   sendToClient,
 } from "../monitorHub.js";
 import {
@@ -64,6 +65,7 @@ const heartbeatSchema = z.object({
 
 export async function registerKioskRoutes(app: FastifyInstance) {
   const refreshTimer = setInterval(async () => {
+    if (monitorClientCount() === 0) return;
     try {
       broadcastSnapshot((await loadKioskSnapshot()).map(enrichKioskDto));
     } catch (err) {
@@ -610,24 +612,22 @@ export async function registerKioskRoutes(app: FastifyInstance) {
     const q = request.query as { softwareVersion?: string };
     const localSw = String(q.softwareVersion || "").trim();
     const updateAvailable = Boolean(localSw && localSw !== meta.softwareVersion && meta.updateZipPath);
-    const ads = await getGlobalAdsState();
-    const timeline = await getGlobalTimelineState();
+    // Versions only — avoid loading full ads/timeline media graphs on every poll
+    const settings = await ensureSiteSettings();
     const contentVersion = kiosk.exhibit?.contentVersion ?? null;
+    const adsVersion = settings.adsVersion;
+    const settingsVersion = settings.settingsVersion;
+    const timelineVersion = settings.timelineVersion || "1";
 
     return {
       kioskId: kiosk.kioskId,
       contentVersion,
-      adsVersion: ads.adsVersion,
-      timelineVersion: timeline.timelineVersion,
-      settingsVersion: ads.settingsVersion,
-      blockKeyboard: ads.blockKeyboard,
-      softwareEnabled: ads.softwareEnabled,
-      syncFingerprint: syncFingerprint(
-        contentVersion,
-        ads.adsVersion,
-        ads.settingsVersion,
-        timeline.timelineVersion
-      ),
+      adsVersion,
+      timelineVersion,
+      settingsVersion,
+      blockKeyboard: settings.blockKeyboard,
+      softwareEnabled: settings.softwareEnabled,
+      syncFingerprint: syncFingerprint(contentVersion, adsVersion, settingsVersion, timelineVersion),
       softwareVersion: meta.softwareVersion,
       appVersion: meta.appVersion,
       updateAvailable: localSw ? updateAvailable : Boolean(meta.updateZipPath || meta.packageZipPath),

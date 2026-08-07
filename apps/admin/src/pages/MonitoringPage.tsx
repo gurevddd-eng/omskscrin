@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import type { KioskDto } from "@stella/shared";
 import { getToken } from "../api";
 import { probeBadgeClass, probeLabel } from "../components/kiosk/status";
@@ -18,18 +18,33 @@ function formatAgo(iso: string | null, now: number) {
   return new Date(iso).toLocaleString("ru-RU");
 }
 
+/** Isolated so relative-time ticks do not re-render the whole monitoring table. */
+function RelativeTime({ iso }: { iso: string | null }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 5000);
+    return () => clearInterval(t);
+  }, []);
+  return <>{formatAgo(iso, now)}</>;
+}
+
+function RowFlash({ flashAt, children }: { flashAt?: number; children: ReactNode }) {
+  const [flashing, setFlashing] = useState(false);
+  useEffect(() => {
+    if (!flashAt) return;
+    setFlashing(true);
+    const t = setTimeout(() => setFlashing(false), 1200);
+    return () => clearTimeout(t);
+  }, [flashAt]);
+  return <tr className={flashing ? "row-flash" : undefined}>{children}</tr>;
+}
+
 export function MonitoringPage() {
   const [kiosks, setKiosks] = useState<KioskDto[]>([]);
   const [conn, setConn] = useState<ConnState>("connecting");
   const [error, setError] = useState("");
-  const [now, setNow] = useState(Date.now());
   const [flashIds, setFlashIds] = useState<Record<string, number>>({});
   const [lastEventAt, setLastEventAt] = useState<string | null>(null);
-
-  useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(t);
-  }, []);
 
   useEffect(() => {
     let es: EventSource | null = null;
@@ -141,7 +156,9 @@ export function MonitoringPage() {
             {connLabel}
           </div>
           {lastEventAt ? (
-            <span className="muted monitor-event__value">Обновлено {formatAgo(lastEventAt, now)}</span>
+            <span className="muted monitor-event__value">
+              Обновлено <RelativeTime iso={lastEventAt} />
+            </span>
           ) : null}
         </>
       }
@@ -173,39 +190,40 @@ export function MonitoringPage() {
               </tr>
             </thead>
             <tbody>
-              {kiosks.map((k) => {
-                const flashing = flashIds[k.id] && now - flashIds[k.id] < 1200;
-                return (
-                  <tr key={k.id} className={flashing ? "row-flash" : undefined}>
-                    <td>
-                      <div className="cx-cell-title">{k.name}</div>
-                      <div className="muted cx-cell-sub">{k.hostname}</div>
-                    </td>
-                    <td>
-                      <span className={`badge ${probeBadgeClass(k.probeStatus)}`}>
-                        {probeLabel(k.probeStatus)}
-                      </span>
-                      {k.probeMessage ? <div className="muted cx-cell-sub">{k.probeMessage}</div> : null}
-                    </td>
-                    <td>
-                      <span className={`badge ${k.online ? "online" : "offline"}`}>
-                        {k.online ? "онлайн" : "офлайн"}
-                      </span>
-                    </td>
-                    <td>{k.exhibitTitle || "—"}</td>
-                    <td>
-                      <span className={`badge ${k.syncStatus === "error" ? "error" : "ok"}`}>
-                        {k.syncStatus}
-                      </span>
-                      {k.syncMessage ? <div className="muted cx-cell-sub">{k.syncMessage}</div> : null}
-                    </td>
-                    <td className="monitor-ago">
-                      <div>HB {formatAgo(k.lastSeenAt, now)}</div>
-                      <div className="muted">опрос {formatAgo(k.lastProbeAt, now)}</div>
-                    </td>
-                  </tr>
-                );
-              })}
+              {kiosks.map((k) => (
+                <RowFlash key={k.id} flashAt={flashIds[k.id]}>
+                  <td>
+                    <div className="cx-cell-title">{k.name}</div>
+                    <div className="muted cx-cell-sub">{k.hostname}</div>
+                  </td>
+                  <td>
+                    <span className={`badge ${probeBadgeClass(k.probeStatus)}`}>
+                      {probeLabel(k.probeStatus)}
+                    </span>
+                    {k.probeMessage ? <div className="muted cx-cell-sub">{k.probeMessage}</div> : null}
+                  </td>
+                  <td>
+                    <span className={`badge ${k.online ? "online" : "offline"}`}>
+                      {k.online ? "онлайн" : "офлайн"}
+                    </span>
+                  </td>
+                  <td>{k.exhibitTitle || "—"}</td>
+                  <td>
+                    <span className={`badge ${k.syncStatus === "error" ? "error" : "ok"}`}>
+                      {k.syncStatus}
+                    </span>
+                    {k.syncMessage ? <div className="muted cx-cell-sub">{k.syncMessage}</div> : null}
+                  </td>
+                  <td className="monitor-ago">
+                    <div>
+                      HB <RelativeTime iso={k.lastSeenAt} />
+                    </div>
+                    <div className="muted">
+                      опрос <RelativeTime iso={k.lastProbeAt} />
+                    </div>
+                  </td>
+                </RowFlash>
+              ))}
               {!kiosks.length && (
                 <tr>
                   <td colSpan={6}>
