@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import type { Prisma } from "@prisma/client";
 import { z } from "zod";
-import { normalizeGameShareFolder } from "@stella/shared";
+import { normalizeGameShareFolder, normalizeUncPath } from "@stella/shared";
 import { prisma } from "../prisma.js";
 import { authenticate, requireRoles } from "../auth.js";
 import { toFileDto } from "./files.js";
@@ -53,13 +53,30 @@ async function normalizeExhibitGameFields(input: {
 }) {
   const settings = await ensureSiteSettings();
   const unc = settings.gameShareUnc;
+  const folder =
+    input.gameShareFolder === undefined
+      ? undefined
+      : normalizeGameShareFolder(unc, input.gameShareFolder);
+  let exe = input.gameExe === undefined ? undefined : normalizeGameField(input.gameExe);
+  if (exe !== undefined && exe) {
+    const exeNorm = exe.replace(/\//g, "\\");
+    const fullFolder = folder ? `${normalizeUncPath(unc)}\\${folder}` : "";
+    if (fullFolder && exeNorm.toLowerCase().startsWith(fullFolder.toLowerCase() + "\\")) {
+      exe = exeNorm.slice(fullFolder.length).replace(/^[\\\/]+/, "");
+    } else if (folder && exeNorm.toLowerCase().startsWith(folder.toLowerCase() + "\\")) {
+      exe = exeNorm.slice(folder.length).replace(/^[\\\/]+/, "");
+    } else if (exeNorm.includes("\\")) {
+      // keep relative subpaths like subdir\game.exe; strip accidental UNC roots
+      if (exeNorm.startsWith("\\\\")) {
+        const parts = exeNorm.split("\\").filter(Boolean);
+        exe = parts[parts.length - 1] || exe;
+      }
+    }
+  }
   return {
     gameTitle: normalizeGameField(input.gameTitle),
-    gameShareFolder:
-      input.gameShareFolder === undefined
-        ? undefined
-        : normalizeGameShareFolder(unc, input.gameShareFolder),
-    gameExe: input.gameExe === undefined ? undefined : normalizeGameField(input.gameExe),
+    gameShareFolder: folder,
+    gameExe: exe,
   };
 }
 

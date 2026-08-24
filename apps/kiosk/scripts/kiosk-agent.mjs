@@ -546,8 +546,19 @@ const healthServer = http.createServer(async (req, res) => {
         fs.mkdirSync(omskekranRoot, { recursive: true });
         fs.mkdirSync(gamesRoot, { recursive: true });
 
-        const localFolder = path.join(gamesRoot, localName);
+        const localFolder = path.join(gameRoot, localName);
         fs.mkdirSync(localFolder, { recursive: true });
+
+        // Strip accidental folder/UNC prefix from exe (admin sometimes pastes full path)
+        let exeRel = exe.replace(/\//g, "\\");
+        const folderNorm = resolved.folder.replace(/\//g, "\\");
+        if (exeRel.toLowerCase().startsWith(uncFolder.toLowerCase() + "\\")) {
+          exeRel = exeRel.slice(uncFolder.length).replace(/^[\\\/]+/, "");
+        } else if (folderNorm && exeRel.toLowerCase().startsWith(folderNorm.toLowerCase() + "\\")) {
+          exeRel = exeRel.slice(folderNorm.length).replace(/^[\\\/]+/, "");
+        } else if (exeRel.toLowerCase().startsWith(localName.toLowerCase() + "\\")) {
+          exeRel = exeRel.slice(localName.length).replace(/^[\\\/]+/, "");
+        }
 
         gameCopy = {
           status: "copying",
@@ -559,44 +570,110 @@ const healthServer = http.createServer(async (req, res) => {
           updatedAt: new Date().toISOString(),
         };
 
-        // Incremental copy (best-effort). If share is down — keep last copy.
-        const runRobocopy = () =>
+        // SYSTEM cannot access domain SMB shares — copy as interactive console user.
+        const runRobocopyAsUser = () =>
           new Promise((resolve) => {
-            const args = [
-              uncFolder,
-              localFolder,
-              "/E",
-              "/COPY:DAT",
-              "/DCOPY:DAT",
-              "/XO",
-              "/R:1",
-              "/W:2",
-              "/NFL",
-              "/NDL",
-              "/NJH",
-              "/NJS",
-              "/NP",
-            ];
-            const ps = spawn("robocopy", args, { windowsHide: true });
-            ps.on("close", (code) => resolve(code ?? 1));
-            ps.on("error", () => resolve(1));
+            const codeFile = path.join(omskekranRoot, "_robocopy_exit.txt");
+            try {
+              if (fs.existsSync(codeFile)) fs.unlinkSync(codeFile);
+            } catch {
+              /* ignore */
+            }
+            const srcEsc = String(uncFolder).replace(/'/g, "''");
+            const dstEsc = String(localFolder).replace(/'/g, "''");
+            const codeEsc = String(codeFile).replace(/'/g, "''");
+            const cachedEsc = String(readCachedConsoleUser() || "").replace(/'/g, "''");
+            const script = `
+$ErrorActionPreference = 'SilentlyContinue'
+function Resolve-User {
+  $cs = Get-CimInstance Win32_ComputerSystem
+  if ($cs -and $cs.UserName) { return $cs.UserName }
+  $proc = Get-CimInstance Win32_Process -Filter "Name = 'explorer.exe'" | Select-Object -First 1
+  if ($proc) {
+    $o = Invoke-CimMethod -InputObject $proc -MethodName GetOwner -ErrorAction SilentlyContinue
+    if ($o -and $o.User) {
+      if ($o.Domain) { return "$($o.Domain)\\$($o.User)" }
+      return $o.User
+    }
+  }
+  $cached = '${cachedEsc}'
+  if ($cached) { return $cached }
+  return $null
+}
+$user = Resolve-User
+$codeOut = '${codeEsc}'
+$src = '${srcEsc}'
+$dst = '${dstEsc}'
+if (-not $user) {
+  Set-Content -LiteralPath $codeOut -Value '16' -Encoding ASCII
+  exit 2
+}
+New-Item -ItemType Directory -Force -Path $dst | Out-Null
+$bat = Join-Path $env:TEMP ('stella-robo-' + [guid]::NewGuid().ToString('n') + '.cmd')
+$srcBat = $src.Replace('"','')
+$dstBat = $dst.Replace('"','')
+$codeBat = $codeOut.Replace('"','')
+@(
+  '@echo off',
+  ('robocopy "' + $srcBat + '" "' + $dstBat + '" /E /COPY:DAT /DCOPY:DAT /XO /R:1 /W:2 /NFL /NDL /NJH /NJS /NP'),
+  ('echo %ERRORLEVEL%>"' + $codeBat + '"')
+) | Set-Content -LiteralPath $bat -Encoding ASCII
+$task = 'StellaKioskRoboOnce'
+try { Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue | Out-Null } catch {}
+$action = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument ('/c "' + $bat + '"')
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances Parallel -ExecutionTimeLimit (New-TimeSpan -Minutes 120) -Hidden
+$principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Highest
+Register-ScheduledTask -TaskName $task -Action $action -Settings $settings -Principal $principal -Force | Out-Null
+Start-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue | Out-Null
+for ($i=0; $i -lt 7200; $i++) {
+  if (Test-Path -LiteralPath $codeOut) { break }
+  $info = Get-ScheduledTaskInfo -TaskName $task -ErrorAction SilentlyContinue
+  if ($info -and $info.State -ne 'Running' -and $i -gt 2) {
+    Start-Sleep -Milliseconds 400
+    if (Test-Path -LiteralPath $codeOut) { break }
+    if (-not (Test-Path -LiteralPath $codeOut)) { Set-Content -LiteralPath $codeOut -Value '16' -Encoding ASCII }
+    break
+  }
+  Start-Sleep -Milliseconds 500
+}
+try { Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue | Out-Null } catch {}
+Remove-Item -LiteralPath $bat -Force -ErrorAction SilentlyContinue
+if (-not (Test-Path -LiteralPath $codeOut)) { Set-Content -LiteralPath $codeOut -Value '16' -Encoding ASCII }
+`;
+            const ps = spawnPowerShell(["-Command", script]);
+            ps.on("error", () => resolve(16));
+            ps.on("close", () => {
+              try {
+                const rawCode = fs.readFileSync(codeFile, "utf8").trim();
+                const n = Number(rawCode);
+                resolve(Number.isFinite(n) ? n : 16);
+              } catch {
+                resolve(16);
+              } finally {
+                try {
+                  fs.unlinkSync(codeFile);
+                } catch {
+                  /* ignore */
+                }
+              }
+            });
           });
 
-        const robocode = await runRobocopy();
+        const robocode = await runRobocopyAsUser();
         // Robocopy: 0..7 are success (0=no change, 1..7 are copied/needs attention)
         const okCopy = robocode >= 0 && robocode <= 7;
         if (!okCopy) {
           console.warn(`[stella-agent] robocopy code=${robocode} unc=${uncFolder}`);
         }
 
-        const safeExeRel = exe.replace(/[\/\\]+/g, path.sep);
+        const safeExeRel = exeRel.replace(/[\/\\]+/g, path.sep);
         const candidates = [
           path.resolve(path.join(localFolder, safeExeRel)),
           path.resolve(path.join(localFolder, path.basename(safeExeRel))),
         ];
         let localExePath = candidates.find((p) => isPathInside(localFolder, p) && fs.existsSync(p)) || null;
         if (!localExePath) {
-          // Fallback: search by basename under copied folder (depth 4)
+          // Fallback: search by basename under copied folder
           const want = path.basename(safeExeRel).toLowerCase();
           const stack = [localFolder];
           let depth = 0;
@@ -634,8 +711,8 @@ const healthServer = http.createServer(async (req, res) => {
           sendJson(res, 404, {
             ok: false,
             error: okCopy
-              ? `Игра не найдена: нет файла «${exe}» в «${uncFolder}»`
-              : `Нет доступа к шаре или игра не скопирована (код ${robocode}). Проверьте «${uncFolder}»`,
+              ? `Игра не найдена: нет файла «${exeRel}» в «${uncFolder}»`
+              : `Нет доступа к шаре или игра не скопирована (код ${robocode}). Проверьте «${uncFolder}» от имени пользователя за консолью`,
           });
           return;
         }
