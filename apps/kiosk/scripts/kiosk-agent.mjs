@@ -86,6 +86,16 @@ let updateInProgress = false;
 let updateFailCount = 0;
 let nextUpdateAllowedAt = 0;
 let gameLaunchInProgress = false;
+let lastHeartbeatAt = 0;
+let gameCopy = {
+  status: "idle",
+  folder: null,
+  percent: null,
+  copiedBytes: null,
+  totalBytes: null,
+  message: null,
+  updatedAt: null,
+};
 const omskekranRoot = path.join(process.env.ProgramData || "C:\\ProgramData", "omskekran");
 const contentRoot = path.join(omskekranRoot, "content");
 const gamesRoot = path.join(omskekranRoot, "games");
@@ -96,6 +106,7 @@ const forceUpdatePath = path.join(
   "StellaKiosk",
   "FORCE_UPDATE"
 );
+const PS_HIDDEN = ["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass"];
 
 function readForceUpdateFlag() {
   try {
@@ -219,6 +230,7 @@ const healthServer = http.createServer(async (req, res) => {
       appVersion,
       softwareVersion,
       updateInProgress,
+      gameCopy,
       contentVersion: live.contentVersion,
       syncStatus: live.syncStatus,
       syncMessage: live.syncMessage,
@@ -490,7 +502,7 @@ Write-Output 'ok'
         await new Promise((resolve, reject) => {
           const ps = spawn(
             "powershell.exe",
-            ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
+            [...PS_HIDDEN, "-Command", script],
             { windowsHide: true }
           );
           ps.on("error", (err) => reject(err));
@@ -680,7 +692,7 @@ function runPowerShell(script) {
   return new Promise((resolve, reject) => {
     const ps = spawn(
       "powershell.exe",
-      ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
+      [...PS_HIDDEN, "-Command", script],
       { windowsHide: true }
     );
     let err = "";
@@ -1033,10 +1045,7 @@ function clearStoppedIfFromPreviousBoot() {
     const out = execFileSync(
       "powershell.exe",
       [
-        "-NoProfile",
-        "-NonInteractive",
-        "-ExecutionPolicy",
-        "Bypass",
+        ...PS_HIDDEN,
         "-Command",
         "[int64]([DateTimeOffset](Get-CimInstance Win32_OperatingSystem).LastBootUpTime).ToUnixTimeMilliseconds()",
       ],
@@ -1115,10 +1124,7 @@ function killEdgeUi() {
     execFileSync(
       "powershell.exe",
       [
-        "-NoProfile",
-        "-NonInteractive",
-        "-ExecutionPolicy",
-        "Bypass",
+        ...PS_HIDDEN,
         "-Command",
         `$m='${marker}'; Get-CimInstance Win32_Process -Filter "Name = 'msedge.exe'" -EA SilentlyContinue | ForEach-Object { if ($_.CommandLine -and $_.CommandLine -like "*$m*") { Stop-Process -Id $_.ProcessId -Force -EA SilentlyContinue } }`,
       ],
@@ -1159,10 +1165,7 @@ function isEdgeKioskRunning() {
     const ps = spawn(
       "powershell.exe",
       [
-        "-NoProfile",
-        "-NonInteractive",
-        "-ExecutionPolicy",
-        "Bypass",
+        ...PS_HIDDEN,
         "-Command",
         `$m='${marker}'; $ok=$false; Get-CimInstance Win32_Process -Filter \"Name = 'msedge.exe'\" -ErrorAction SilentlyContinue | ForEach-Object { if ($_.CommandLine -and $_.CommandLine -like \"*$m*\") { $ok=$true } }; if ($ok) { exit 0 } else { exit 1 }`,
       ],
@@ -1240,10 +1243,7 @@ function ensureConsoleUserCached() {
     const out = execFileSync(
       "powershell.exe",
       [
-        "-NoProfile",
-        "-NonInteractive",
-        "-ExecutionPolicy",
-        "Bypass",
+        ...PS_HIDDEN,
         "-Command",
         resolveInteractiveUserPs(readCachedConsoleUser()),
       ],
@@ -1353,7 +1353,7 @@ Write-Output ("explorer-shell ok=$ex")
   // Non-blocking — sync PowerShell here freezes OTA / health on the agent event loop
   const ps = spawn(
     "powershell.exe",
-    ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
+    [...PS_HIDDEN, "-Command", script],
     { windowsHide: true }
   );
   ps.on("error", () => {});
@@ -1453,7 +1453,7 @@ Write-Output "ok:$user"
 `;
   const ps = spawn(
     "powershell.exe",
-    ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script2],
+    [...PS_HIDDEN, "-Command", script2],
     { windowsHide: true }
   );
   let out = "";
@@ -1572,10 +1572,7 @@ function applyOsLockdownPolicies(enabled) {
   const ps = spawn(
     "powershell.exe",
     [
-      "-NoProfile",
-      "-NonInteractive",
-      "-ExecutionPolicy",
-      "Bypass",
+      ...PS_HIDDEN,
       "-File",
       lockdownPoliciesPath,
       "-Mode",
@@ -1633,10 +1630,7 @@ function isKeyBlockRunning() {
     const ps = spawn(
       "powershell.exe",
       [
-        "-NoProfile",
-        "-NonInteractive",
-        "-ExecutionPolicy",
-        "Bypass",
+        ...PS_HIDDEN,
         "-Command",
         `$ok=$false; Get-CimInstance Win32_Process -Filter \"Name = 'powershell.exe'\" -ErrorAction SilentlyContinue | ForEach-Object { if ($_.CommandLine -and $_.CommandLine -like '*block-hotkeys.ps1*') { $ok=$true } }; if ($ok) { exit 0 } else { exit 1 }`,
       ],
@@ -1669,7 +1663,7 @@ if (Test-Path (Join-Path $env:ProgramData 'StellaKiosk\\BLOCK_KEYBOARD')) {
   }
 }
 `;
-  spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script], {
+  spawn("powershell.exe", [...PS_HIDDEN, "-Command", script], {
     windowsHide: true,
   });
 }
@@ -1739,7 +1733,7 @@ Write-Output "ok:$user"
 `;
   const ps = spawn(
     "powershell.exe",
-    ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
+    [...PS_HIDDEN, "-Command", script],
     { windowsHide: true }
   );
   let out = "";

@@ -26,6 +26,7 @@ import { createHash } from "node:crypto";
 import { createReadStream, existsSync } from "node:fs";
 import { cancelKioskInstall, clearInstallCancelRequest, deployPackageReady, startKioskInstall } from "../remoteInstall.js";
 import { enrichKioskDto } from "../kioskDtoEnrich.js";
+import { setGameCopyState } from "../gameCopyState.js";
 import { requestClearKioskPolicies } from "../remoteClearPolicies.js";
 import { requestStartKioskRuntime } from "../remoteStart.js";
 import { requestStopKioskRuntime } from "../remoteStop.js";
@@ -95,6 +96,17 @@ const heartbeatSchema = z.object({
           })
         )
         .max(200),
+    })
+    .optional(),
+  gameCopy: z
+    .object({
+      status: z.enum(["idle", "copying", "launching", "running", "error"]),
+      folder: z.string().max(260).nullable().optional(),
+      percent: z.number().min(0).max(100).nullable().optional(),
+      copiedBytes: z.number().nonnegative().nullable().optional(),
+      totalBytes: z.number().nonnegative().nullable().optional(),
+      message: z.string().max(400).nullable().optional(),
+      updatedAt: z.string().max(40).nullable().optional(),
     })
     .optional(),
 });
@@ -716,7 +728,18 @@ export async function registerKioskRoutes(app: FastifyInstance) {
         },
         include: { exhibit: { select: { title: true, contentVersion: true } } },
       });
-      const dto = mapKiosk(k);
+      if (body.gameCopy) {
+        setGameCopyState(k.kioskId, k.hostname, {
+          status: body.gameCopy.status,
+          folder: body.gameCopy.folder ?? null,
+          percent: body.gameCopy.percent ?? null,
+          copiedBytes: body.gameCopy.copiedBytes ?? null,
+          totalBytes: body.gameCopy.totalBytes ?? null,
+          message: body.gameCopy.message ?? null,
+          updatedAt: body.gameCopy.updatedAt ?? new Date().toISOString(),
+        });
+      }
+      const dto = enrichKioskDto(mapKiosk(k));
       broadcastKioskUpsert(dto);
 
       const meta = getDeployMeta();

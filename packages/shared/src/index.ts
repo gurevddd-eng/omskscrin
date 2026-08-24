@@ -221,6 +221,18 @@ export interface GameShareDto {
   sourceHostname: string | null;
 }
 
+export type GameCopyStatus = "idle" | "copying" | "launching" | "running" | "error";
+
+export interface GameCopyDto {
+  status: GameCopyStatus;
+  folder: string | null;
+  percent: number | null;
+  copiedBytes: number | null;
+  totalBytes: number | null;
+  message: string | null;
+  updatedAt: string | null;
+}
+
 export const DEFAULT_GAME_SHARE_UNC = "\\\\HYDRALISK3\\Patriot\\Игры парк победы";
 
 export interface ExhibitDto {
@@ -285,6 +297,8 @@ export interface KioskDto {
   uiStopStatus: UiStopStatus;
   uiStopStage: UiStopStage;
   uiStopMessage: string | null;
+  /** Live robocopy / launch of exhibit game from the kiosk agent. */
+  gameCopy?: GameCopyDto | null;
 }
 
 export interface HeartbeatRequest {
@@ -297,6 +311,7 @@ export interface HeartbeatRequest {
   gameShare?: {
     folders: GameShareFolder[];
   };
+  gameCopy?: GameCopyDto;
 }
 
 export interface ManifestFile {

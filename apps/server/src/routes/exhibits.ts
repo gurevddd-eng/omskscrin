@@ -26,8 +26,22 @@ const exhibitSchema = z.object({
   gameExe: z.string().max(260).nullable().optional(),
 });
 
-function normalizeGameField(value: string | null | undefined) {
-  return String(value ?? "").trim();
+function parseExhibitBody(raw: unknown, partial: boolean) {
+  const result = partial ? exhibitSchema.partial().safeParse(raw) : exhibitSchema.safeParse(raw);
+  if (!result.success) {
+    const message = result.error.issues
+      .map((i) => (i.path.length ? `${i.path.join(".")}: ${i.message}` : i.message))
+      .join("; ");
+    const err = Object.assign(new Error(message || "Некорректные данные экспоната"), { statusCode: 400 });
+    throw err;
+  }
+  return result.data;
+}
+
+/** Trim game fields; Prisma columns are non-null strings. */
+function normalizeGameField(value: string | null | undefined): string {
+  if (value == null) return "";
+  return String(value).trim();
 }
 
 function bumpVersion(current: string) {
@@ -137,30 +151,42 @@ export async function registerExhibitRoutes(app: FastifyInstance) {
     return exhibit;
   });
 
-  app.post("/api/exhibits", { preHandler: requireRoles("admin", "editor") }, async (request) => {
-    const body = exhibitSchema.parse(request.body);
-    const specs = parseSpecs(body.specs ?? []) as Prisma.InputJsonValue;
-    const created = await prisma.exhibit.create({
-      data: {
-        title: body.title,
-        summary: body.summary ?? "",
-        body: body.body ?? "",
-        specs,
-        heroImageId: body.heroImageId ?? null,
-        videoId: body.videoId ?? null,
-        audioId: body.audioId ?? null,
-        gameTitle: normalizeGameField(body.gameTitle) || "Играть",
-        gameShareFolder: normalizeGameField(body.gameShareFolder),
-        gameExe: normalizeGameField(body.gameExe),
-        contentVersion: "1",
-        gallery: body.galleryIds
-          ? {
-              create: body.galleryIds.map((fileId, sortOrder) => ({ fileId, sortOrder })),
-            }
-          : undefined,
-      },
-    });
-    return mapExhibit(created.id);
+  app.post("/api/exhibits", { preHandler: requireRoles("admin", "editor") }, async (request, reply) => {
+    try {
+      const body = parseExhibitBody(request.body, false);
+      if (!body.title?.trim()) {
+        return reply.code(400).send({ error: "title: Required" });
+      }
+      const specs = parseSpecs(body.specs ?? []) as Prisma.InputJsonValue;
+      const created = await prisma.exhibit.create({
+        data: {
+          title: body.title.trim(),
+          summary: body.summary ?? "",
+          body: body.body ?? "",
+          specs,
+          heroImageId: body.heroImageId ?? null,
+          videoId: body.videoId ?? null,
+          audioId: body.audioId ?? null,
+          gameTitle: normalizeGameField(body.gameTitle) || "Играть",
+          gameShareFolder: normalizeGameField(body.gameShareFolder),
+          gameExe: normalizeGameField(body.gameExe),
+          contentVersion: "1",
+          gallery: body.galleryIds
+            ? {
+                create: body.galleryIds.map((fileId, sortOrder) => ({ fileId, sortOrder })),
+              }
+            : undefined,
+        },
+      });
+      return mapExhibit(created.id);
+    } catch (err) {
+      const status =
+        err && typeof err === "object" && "statusCode" in err && typeof (err as { statusCode: unknown }).statusCode === "number"
+          ? (err as { statusCode: number }).statusCode
+          : 400;
+      const message = err instanceof Error ? err.message : "Не удалось создать экспонат";
+      return reply.code(status).send({ error: message });
+    }
   });
 
   app.patch(
@@ -168,51 +194,60 @@ export async function registerExhibitRoutes(app: FastifyInstance) {
     { preHandler: requireRoles("admin", "editor") },
     async (request, reply) => {
       const { id } = request.params as { id: string };
-      const body = exhibitSchema.partial().parse(request.body);
-      const existing = await prisma.exhibit.findUnique({ where: { id } });
-      if (!existing) return reply.code(404).send({ error: "Not found" });
+      try {
+        const body = parseExhibitBody(request.body, true);
+        const existing = await prisma.exhibit.findUnique({ where: { id } });
+        if (!existing) return reply.code(404).send({ error: "Not found" });
 
-      await prisma.$transaction(async (tx) => {
-        if (body.galleryIds) {
-          await tx.exhibitGallery.deleteMany({ where: { exhibitId: id } });
-          await tx.exhibitGallery.createMany({
-            data: body.galleryIds.map((fileId, sortOrder) => ({
-              exhibitId: id,
-              fileId,
-              sortOrder,
-            })),
+        await prisma.$transaction(async (tx) => {
+          if (body.galleryIds) {
+            await tx.exhibitGallery.deleteMany({ where: { exhibitId: id } });
+            await tx.exhibitGallery.createMany({
+              data: body.galleryIds.map((fileId, sortOrder) => ({
+                exhibitId: id,
+                fileId,
+                sortOrder,
+              })),
+            });
+          }
+
+          await tx.exhibit.update({
+            where: { id },
+            data: {
+              title: body.title === undefined ? undefined : body.title.trim(),
+              summary: body.summary,
+              body: body.body,
+              specs:
+                body.specs === undefined
+                  ? undefined
+                  : (parseSpecs(body.specs) as Prisma.InputJsonValue),
+              heroImageId: body.heroImageId === undefined ? undefined : body.heroImageId,
+              videoId: body.videoId === undefined ? undefined : body.videoId,
+              audioId: body.audioId === undefined ? undefined : body.audioId,
+              gameTitle:
+                body.gameTitle === undefined
+                  ? undefined
+                  : normalizeGameField(body.gameTitle) || "Играть",
+              gameShareFolder:
+                body.gameShareFolder === undefined
+                  ? undefined
+                  : normalizeGameField(body.gameShareFolder),
+              gameExe: body.gameExe === undefined ? undefined : normalizeGameField(body.gameExe),
+              contentVersion: bumpVersion(existing.contentVersion),
+            },
           });
-        }
-
-        await tx.exhibit.update({
-          where: { id },
-          data: {
-            title: body.title,
-            summary: body.summary,
-            body: body.body,
-            specs:
-              body.specs === undefined
-                ? undefined
-                : (parseSpecs(body.specs) as Prisma.InputJsonValue),
-            heroImageId: body.heroImageId === undefined ? undefined : body.heroImageId,
-            videoId: body.videoId === undefined ? undefined : body.videoId,
-            audioId: body.audioId === undefined ? undefined : body.audioId,
-            gameTitle:
-              body.gameTitle === undefined
-                ? undefined
-                : normalizeGameField(body.gameTitle) || "Играть",
-            gameShareFolder:
-              body.gameShareFolder === undefined
-                ? undefined
-                : normalizeGameField(body.gameShareFolder),
-            gameExe: body.gameExe === undefined ? undefined : normalizeGameField(body.gameExe),
-            contentVersion: bumpVersion(existing.contentVersion),
-          },
         });
-      });
 
-      broadcastContentSync({ reason: "exhibit", exhibitId: id });
-      return mapExhibit(id);
+        broadcastContentSync({ reason: "exhibit", exhibitId: id });
+        return mapExhibit(id);
+      } catch (err) {
+        const status =
+          err && typeof err === "object" && "statusCode" in err && typeof (err as { statusCode: unknown }).statusCode === "number"
+            ? (err as { statusCode: number }).statusCode
+            : 400;
+        const message = err instanceof Error ? err.message : "Не удалось сохранить экспонат";
+        return reply.code(status).send({ error: message });
+      }
     }
   );
 
