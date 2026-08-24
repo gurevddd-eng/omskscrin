@@ -31,6 +31,10 @@ export function SettingsPage() {
   const [themeDarkTo, setThemeDarkTo] = useState("08:00");
   const [themeNow, setThemeNow] = useState<"light" | "dark" | null>(null);
   const [settingsVersion, setSettingsVersion] = useState("—");
+  const [gameShareUnc, setGameShareUnc] = useState("\\\\HYDRALISK3\\Patriot\\Игры парк победы");
+  const [gameShareBusy, setGameShareBusy] = useState(false);
+  const [gameShareDirty, setGameShareDirty] = useState(false);
+  const [gameShareHint, setGameShareHint] = useState("");
   const [serverPublicUrl, setServerPublicUrl] = useState("");
   const [defaultHealthPort, setDefaultHealthPort] = useState(47821);
   const [defaultUiPort, setDefaultUiPort] = useState(47820);
@@ -82,6 +86,8 @@ export function SettingsPage() {
     setThemeDarkTo(data.themeDarkTo || "08:00");
     setThemeNow(data.theme ?? null);
     setSettingsVersion(data.settingsVersion);
+    setGameShareUnc(data.gameShareUnc || "\\\\HYDRALISK3\\Patriot\\Игры парк победы");
+    setGameShareDirty(false);
     setServerPublicUrl(data.network.serverPublicUrl);
     setEffectiveServerUrl(data.network.effectiveServerPublicUrl);
     setDefaultHealthPort(data.network.defaultHealthPort);
@@ -106,6 +112,28 @@ export function SettingsPage() {
     );
     const failed = results.filter((r) => r.status === "rejected").length;
     return { ok: results.length - failed, failed, total: results.length };
+  }
+
+  async function onSaveGameShare(e: FormEvent) {
+    e.preventDefault();
+    if (!canEdit) return;
+    setGameShareBusy(true);
+    setError("");
+    setGameShareHint("");
+    try {
+      const saved = await api<SiteSettingsDto>("/api/settings/game-share", {
+        method: "PUT",
+        json: { gameShareUnc: gameShareUnc.trim() },
+      });
+      setGameShareUnc(saved.gameShareUnc);
+      setSettingsVersion(saved.settingsVersion);
+      setGameShareDirty(false);
+      setGameShareHint("UNC шары сохранён — киоски подхватят при heartbeat.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Ошибка сохранения UNC");
+    } finally {
+      setGameShareBusy(false);
+    }
   }
 
   async function onSave(e: FormEvent) {
@@ -384,6 +412,47 @@ export function SettingsPage() {
                 </label>
               </div>
             </div>
+          </form>
+        </Card>
+      ) : null}
+
+      {tab === "behavior" ? (
+        <Card
+          title="Шара с играми"
+          subtitle="UNC-корень, откуда киоски копируют игры для экспонатов"
+          actions={
+            canEdit ? (
+              <button
+                type="submit"
+                form="settings-game-share"
+                className="btn"
+                disabled={gameShareBusy || !gameShareDirty}
+              >
+                {gameShareBusy ? "Сохранение…" : "Сохранить UNC"}
+              </button>
+            ) : null
+          }
+        >
+          <form id="settings-game-share" onSubmit={onSaveGameShare}>
+            <label>
+              UNC шары
+              <input
+                value={gameShareUnc}
+                disabled={!canEdit || gameShareBusy}
+                onChange={(e) => {
+                  setGameShareUnc(e.target.value);
+                  setGameShareDirty(true);
+                  setGameShareHint("");
+                }}
+                placeholder="\\HYDRALISK3\Patriot\Игры парк победы"
+                spellCheck={false}
+              />
+            </label>
+            <p className="field-hint">
+              Укажите корень шары (без имени конкретной игры). В карточке экспоната выбирается папка
+              внутри, например <code>PatriotGame 1stela</code>.
+            </p>
+            {gameShareHint ? <Alert tone="success">{gameShareHint}</Alert> : null}
           </form>
         </Card>
       ) : null}

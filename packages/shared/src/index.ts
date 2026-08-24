@@ -235,6 +235,57 @@ export interface GameCopyDto {
 
 export const DEFAULT_GAME_SHARE_UNC = "\\\\HYDRALISK3\\Patriot\\Игры парк победы";
 
+/** Normalize Windows/UNC path separators and trailing slashes. */
+export function normalizeUncPath(raw: string | null | undefined): string {
+  return String(raw || "")
+    .trim()
+    .replace(/\//g, "\\")
+    .replace(/[\\\/]+$/, "");
+}
+
+/**
+ * Relative folder on the game share, or parse a pasted full UNC without doubling the root.
+ */
+export function normalizeGameShareFolder(
+  uncRoot: string | null | undefined,
+  folderOrPath: string | null | undefined
+): string {
+  const root = normalizeUncPath(uncRoot) || DEFAULT_GAME_SHARE_UNC;
+  let folder = String(folderOrPath || "").trim().replace(/\//g, "\\");
+  if (!folder) return "";
+
+  if (folder.startsWith("\\\\")) {
+    folder = normalizeUncPath(folder);
+    const rootL = root.toLowerCase();
+    const folderL = folder.toLowerCase();
+    if (folderL === rootL) return "";
+    if (folderL.startsWith(rootL + "\\")) {
+      return folder.slice(root.length).replace(/^[\\\/]+/, "");
+    }
+    return folder.split("\\").filter(Boolean).pop() || "";
+  }
+
+  const rootBare = root.replace(/^\\+/, "");
+  const folderL = folder.toLowerCase();
+  if (folderL.startsWith(root.toLowerCase() + "\\")) {
+    folder = folder.slice(root.length).replace(/^[\\\/]+/, "");
+  } else if (folderL.startsWith(rootBare.toLowerCase() + "\\")) {
+    folder = folder.slice(rootBare.length).replace(/^[\\\/]+/, "");
+  }
+
+  return folder.replace(/^[\\\/]+/, "").replace(/[\\\/]+$/, "");
+}
+
+export function joinGameShareUnc(
+  uncRoot: string | null | undefined,
+  folderOrPath: string | null | undefined
+): string {
+  const root = normalizeUncPath(uncRoot) || DEFAULT_GAME_SHARE_UNC;
+  const folder = normalizeGameShareFolder(root, folderOrPath);
+  if (!folder) return root;
+  return `${root}\\${folder}`;
+}
+
 export interface ExhibitDto {
   id: string;
   title: string;
@@ -403,6 +454,8 @@ export interface SiteSettingsDto {
   themeDarkTo: string;
   /** Current effective theme when not manual */
   theme: ThemeName | null;
+  /** UNC root for exhibit games (scanned by domain kiosks). */
+  gameShareUnc: string;
   settingsVersion: string;
   adsVersion: string;
   updatedAt: string;

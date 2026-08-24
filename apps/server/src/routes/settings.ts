@@ -23,6 +23,7 @@ import {
   resolveEffectiveTheme,
 } from "../themeSchedule.js";
 import { broadcastContentSync } from "../contentHub.js";
+import { DEFAULT_GAME_SHARE_UNC, normalizeUncPath } from "@stella/shared";
 
 const hhmm = z
   .string()
@@ -34,6 +35,10 @@ const putSchema = z.object({
   themeMode: z.enum(["manual", "light", "dark", "schedule"]),
   themeDarkFrom: hhmm,
   themeDarkTo: hhmm,
+});
+
+const gameSharePutSchema = z.object({
+  gameShareUnc: z.string().min(3).max(500),
 });
 
 const networkPutSchema = z.object({
@@ -78,6 +83,7 @@ export async function getSiteSettingsDto() {
       darkFrom: themeDarkFrom,
       darkTo: themeDarkTo,
     }),
+    gameShareUnc: normalizeUncPath(s.gameShareUnc) || DEFAULT_GAME_SHARE_UNC,
     settingsVersion: s.settingsVersion,
     adsVersion: s.adsVersion,
     updatedAt: s.updatedAt.toISOString(),
@@ -152,6 +158,23 @@ export async function registerSettingsRoutes(app: FastifyInstance) {
     const dto = await getSiteSettingsDto();
     broadcastContentSync({ reason: "settings" });
     return dto;
+  });
+
+  app.put("/api/settings/game-share", { preHandler: requireRoles("admin", "editor") }, async (request, reply) => {
+    const body = gameSharePutSchema.parse(request.body);
+    const unc = normalizeUncPath(body.gameShareUnc);
+    if (!unc.startsWith("\\\\")) {
+      return reply.code(400).send({ error: "UNC должен начинаться с \\\\сервер\\шара" });
+    }
+    const current = await ensureSiteSettings();
+    await prisma.siteSettings.update({
+      where: { id: "default" },
+      data: {
+        gameShareUnc: unc,
+        settingsVersion: bumpVersion(current.settingsVersion),
+      },
+    });
+    return getSiteSettingsDto();
   });
 
   app.put("/api/settings/network", { preHandler: requireRoles("admin", "editor") }, async (request) => {

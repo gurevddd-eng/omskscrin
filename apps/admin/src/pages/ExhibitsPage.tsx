@@ -1,6 +1,13 @@
 import { FormEvent, useEffect, useMemo, useState, type KeyboardEvent } from "react";
 import { useNavigate } from "react-router-dom";
-import { formatSpecsText, parseSpecsText, type GameShareDto, type SpecRow } from "@stella/shared";
+import {
+  formatSpecsText,
+  joinGameShareUnc,
+  normalizeGameShareFolder,
+  parseSpecsText,
+  type GameShareDto,
+  type SpecRow,
+} from "@stella/shared";
 import { useAuth } from "../auth";
 import { api, uploadFile } from "../api";
 import { PageShell } from "../components/ui/PageShell";
@@ -233,6 +240,27 @@ export function ExhibitsPage() {
     () => gameShare?.folders?.find((f) => f.name === form.gameShareFolder) ?? null,
     [gameShare, form.gameShareFolder]
   );
+  const gameFullPath = useMemo(
+    () =>
+      form.gameShareFolder
+        ? joinGameShareUnc(gameShare?.unc, form.gameShareFolder)
+        : gameShare?.unc || "",
+    [gameShare?.unc, form.gameShareFolder]
+  );
+
+  function applyGameFolderInput(raw: string) {
+    const normalized = normalizeGameShareFolder(gameShare?.unc, raw);
+    patchForm({ gameShareFolder: normalized, gameExe: "" });
+  }
+
+  function applyFullGamePath(raw: string) {
+    const normalized = normalizeGameShareFolder(gameShare?.unc, raw);
+    const folder = gameShare?.folders?.find((f) => f.name === normalized);
+    patchForm({
+      gameShareFolder: normalized,
+      gameExe: folder?.exes?.[0] || form.gameExe || "",
+    });
+  }
 
   async function saveExhibit() {
     if (!canEdit) {
@@ -658,11 +686,13 @@ export function ExhibitsPage() {
               </fieldset>
             </Card>
 
-            <Card title="Игра на киоске" subtitle="Локальный запуск через агент и UNC-шару">
+            <Card title="Игра на киоске" subtitle="Папка на UNC-шаре и .exe для запуска">
               <fieldset disabled={!canEdit} className="exhibit-editor__fields exhibit-editor__game">
                 <p className="field-hint">
-                  Файл игры не загружается на сервер. Киоск копирует выбранную папку с шары
-                  {gameShare?.unc ? ` (${gameShare.unc})` : ""} в C:\ProgramData\omskekran\games.
+                  Корень шары: <code>{gameShare?.unc || "—"}</code>
+                  {" · "}
+                  меняется в Настройки → Поведение → Шара с играми.
+                  Киоск копирует папку в <code>C:\ProgramData\omskekran\games</code>.
                 </p>
                 <label>
                   Подпись кнопки
@@ -672,28 +702,66 @@ export function ExhibitsPage() {
                     placeholder="Играть"
                   />
                 </label>
-                <label>
-                  Папка на шаре
-                  {gameShare?.folders?.length ? (
+                {gameShare?.folders?.length ? (
+                  <label>
+                    Папка из списка (с киоска)
                     <select
-                      value={form.gameShareFolder}
-                      onChange={(e) => patchForm({ gameShareFolder: e.target.value, gameExe: "" })}
+                      value={
+                        gameShare.folders.some((f) => f.name === form.gameShareFolder)
+                          ? form.gameShareFolder
+                          : ""
+                      }
+                      onChange={(e) => applyGameFolderInput(e.target.value)}
                     >
-                      <option value="">Нет игры</option>
+                      <option value="">— выберите или укажите вручную —</option>
                       {gameShare.folders.map((f) => (
                         <option key={f.name} value={f.name}>
                           {f.name}
+                          {f.exes?.length ? ` (${f.exes.length} exe)` : ""}
                         </option>
                       ))}
                     </select>
-                  ) : (
-                    <input
-                      value={form.gameShareFolder}
-                      onChange={(e) => patchForm({ gameShareFolder: e.target.value })}
-                      placeholder="Имя папки на шаре"
-                    />
-                  )}
+                  </label>
+                ) : null}
+                <label>
+                  Папка на шаре (имя или полный UNC)
+                  <input
+                    value={form.gameShareFolder}
+                    onChange={(e) => applyGameFolderInput(e.target.value)}
+                    onBlur={(e) => applyGameFolderInput(e.target.value)}
+                    placeholder="PatriotGame 1stela"
+                    spellCheck={false}
+                  />
                 </label>
+                <label>
+                  Вставить полный путь к папке игры
+                  <input
+                    key={`full-${form.gameShareFolder}`}
+                    defaultValue=""
+                    onBlur={(e) => {
+                      const v = e.target.value.trim();
+                      if (!v) return;
+                      applyFullGamePath(v);
+                      e.target.value = "";
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key !== "Enter") return;
+                      e.preventDefault();
+                      const el = e.target as HTMLInputElement;
+                      const v = el.value.trim();
+                      if (!v) return;
+                      applyFullGamePath(v);
+                      el.value = "";
+                    }}
+                    placeholder="\\HYDRALISK3\Patriot\Игры парк победы\PatriotGame 1stela"
+                    spellCheck={false}
+                  />
+                </label>
+                {form.gameShareFolder ? (
+                  <p className="field-hint">
+                    Итоговый путь копирования: <code>{gameFullPath}</code>
+                  </p>
+                ) : null}
                 <label>
                   Файл .exe
                   {selectedGameFolder?.exes?.length ? (
@@ -713,8 +781,9 @@ export function ExhibitsPage() {
                     <input
                       value={form.gameExe}
                       onChange={(e) => patchForm({ gameExe: e.target.value })}
-                      placeholder="Game.exe"
+                      placeholder="Game.exe или subdir\Game.exe"
                       disabled={!form.gameShareFolder}
+                      spellCheck={false}
                     />
                   )}
                 </label>
@@ -738,7 +807,7 @@ export function ExhibitsPage() {
                 <span className="field-hint">
                   {gameShare?.scannedAt
                     ? `Список папок с киоска ${gameShare.sourceHostname || "—"} · ${new Date(gameShare.scannedAt).toLocaleString("ru-RU")}`
-                    : "Список папок появится, когда киоск в домене увидит шару."}
+                    : "Список папок появится, когда киоск в домене увидит шару. Можно указать путь вручную."}
                 </span>
               </fieldset>
             </Card>

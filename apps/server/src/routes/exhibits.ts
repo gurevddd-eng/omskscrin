@@ -2,10 +2,12 @@ import { createHash } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import type { Prisma } from "@prisma/client";
 import { z } from "zod";
+import { normalizeGameShareFolder } from "@stella/shared";
 import { prisma } from "../prisma.js";
 import { authenticate, requireRoles } from "../auth.js";
 import { toFileDto } from "./files.js";
 import { broadcastContentSync } from "../contentHub.js";
+import { ensureSiteSettings } from "../siteSettings.js";
 
 const specRowSchema = z.object({
   label: z.string(),
@@ -42,6 +44,23 @@ function parseExhibitBody(raw: unknown, partial: boolean) {
 function normalizeGameField(value: string | null | undefined): string {
   if (value == null) return "";
   return String(value).trim();
+}
+
+async function normalizeExhibitGameFields(input: {
+  gameTitle?: string;
+  gameShareFolder?: string | null;
+  gameExe?: string | null;
+}) {
+  const settings = await ensureSiteSettings();
+  const unc = settings.gameShareUnc;
+  return {
+    gameTitle: normalizeGameField(input.gameTitle),
+    gameShareFolder:
+      input.gameShareFolder === undefined
+        ? undefined
+        : normalizeGameShareFolder(unc, input.gameShareFolder),
+    gameExe: input.gameExe === undefined ? undefined : normalizeGameField(input.gameExe),
+  };
 }
 
 function bumpVersion(current: string) {
@@ -158,6 +177,11 @@ export async function registerExhibitRoutes(app: FastifyInstance) {
         return reply.code(400).send({ error: "title: Required" });
       }
       const specs = parseSpecs(body.specs ?? []) as Prisma.InputJsonValue;
+      const game = await normalizeExhibitGameFields({
+        gameTitle: body.gameTitle,
+        gameShareFolder: body.gameShareFolder,
+        gameExe: body.gameExe,
+      });
       const created = await prisma.exhibit.create({
         data: {
           title: body.title.trim(),
@@ -167,9 +191,9 @@ export async function registerExhibitRoutes(app: FastifyInstance) {
           heroImageId: body.heroImageId ?? null,
           videoId: body.videoId ?? null,
           audioId: body.audioId ?? null,
-          gameTitle: normalizeGameField(body.gameTitle) || "Играть",
-          gameShareFolder: normalizeGameField(body.gameShareFolder),
-          gameExe: normalizeGameField(body.gameExe),
+          gameTitle: game.gameTitle || "Играть",
+          gameShareFolder: game.gameShareFolder ?? "",
+          gameExe: game.gameExe ?? "",
           contentVersion: "1",
           gallery: body.galleryIds
             ? {
@@ -199,6 +223,12 @@ export async function registerExhibitRoutes(app: FastifyInstance) {
         const existing = await prisma.exhibit.findUnique({ where: { id } });
         if (!existing) return reply.code(404).send({ error: "Not found" });
 
+        const game = await normalizeExhibitGameFields({
+          gameTitle: body.gameTitle,
+          gameShareFolder: body.gameShareFolder,
+          gameExe: body.gameExe,
+        });
+
         await prisma.$transaction(async (tx) => {
           if (body.galleryIds) {
             await tx.exhibitGallery.deleteMany({ where: { exhibitId: id } });
@@ -225,14 +255,10 @@ export async function registerExhibitRoutes(app: FastifyInstance) {
               videoId: body.videoId === undefined ? undefined : body.videoId,
               audioId: body.audioId === undefined ? undefined : body.audioId,
               gameTitle:
-                body.gameTitle === undefined
-                  ? undefined
-                  : normalizeGameField(body.gameTitle) || "Играть",
+                body.gameTitle === undefined ? undefined : game.gameTitle || "Играть",
               gameShareFolder:
-                body.gameShareFolder === undefined
-                  ? undefined
-                  : normalizeGameField(body.gameShareFolder),
-              gameExe: body.gameExe === undefined ? undefined : normalizeGameField(body.gameExe),
+                body.gameShareFolder === undefined ? undefined : game.gameShareFolder ?? "",
+              gameExe: body.gameExe === undefined ? undefined : game.gameExe ?? "",
               contentVersion: bumpVersion(existing.contentVersion),
             },
           });

@@ -38,6 +38,52 @@ function joinWinPath(...parts) {
   return `${head}\\${rest.join("\\")}`;
 }
 
+function normalizeUncPath(raw) {
+  return String(raw || "")
+    .trim()
+    .replace(/\//g, "\\")
+    .replace(/[\\\/]+$/, "");
+}
+
+/**
+ * Build UNC path to a game folder without doubling the share root.
+ * Accepts relative folder name, or a full/partial UNC pasted by mistake.
+ */
+function resolveGameUncFolder(uncRoot, folderOrPath) {
+  const root = normalizeUncPath(uncRoot) || "\\\\HYDRALISK3\\Patriot\\Игры парк победы";
+  let folder = String(folderOrPath || "").trim().replace(/\//g, "\\");
+  if (!folder) return { root, folder: "", full: "", localName: "" };
+
+  if (folder.startsWith("\\\\")) {
+    folder = normalizeUncPath(folder);
+    const rootL = root.toLowerCase();
+    const folderL = folder.toLowerCase();
+    if (folderL === rootL) {
+      return { root, folder: "", full: root, localName: "" };
+    }
+    if (folderL.startsWith(rootL + "\\")) {
+      const rel = folder.slice(root.length).replace(/^[\\\/]+/, "");
+      const localName = rel.split("\\").filter(Boolean).pop() || rel;
+      return { root, folder: rel, full: folder, localName };
+    }
+    const localName = folder.split("\\").filter(Boolean).pop() || "game";
+    return { root, folder: localName, full: folder, localName };
+  }
+
+  const rootBare = root.replace(/^\\+/, "");
+  const folderL = folder.toLowerCase();
+  if (folderL.startsWith(root.toLowerCase() + "\\")) {
+    folder = folder.slice(root.length).replace(/^[\\\/]+/, "");
+  } else if (folderL.startsWith(rootBare.toLowerCase() + "\\")) {
+    folder = folder.slice(rootBare.length).replace(/^[\\\/]+/, "");
+  }
+
+  folder = folder.replace(/^[\\\/]+/, "").replace(/[\\\/]+$/, "");
+  const full = joinWinPath(root, folder);
+  const localName = folder.split("\\").filter(Boolean).pop() || folder;
+  return { root, folder, full, localName };
+}
+
 function isPathInside(parent, child) {
   const p = path.resolve(parent).toLowerCase();
   const c = path.resolve(child).toLowerCase();
@@ -189,7 +235,36 @@ const forceUpdatePath = path.join(
   "StellaKiosk",
   "FORCE_UPDATE"
 );
-const PS_HIDDEN = ["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass"];
+/** Flags so PowerShell never shows a console (no flash / no echo). */
+const PS_HIDDEN = [
+  "-NoLogo",
+  "-NoProfile",
+  "-NonInteractive",
+  "-WindowStyle",
+  "Hidden",
+  "-ExecutionPolicy",
+  "Bypass",
+];
+
+/** Spawn PowerShell with CREATE_NO_WINDOW (windowsHide) — no console flash. */
+function spawnPowerShell(extraArgs, opts = {}) {
+  const { capture = false, ...rest } = opts;
+  return spawn("powershell.exe", [...PS_HIDDEN, ...extraArgs], {
+    windowsHide: true,
+    stdio: capture ? ["ignore", "pipe", "pipe"] : "ignore",
+    ...rest,
+  });
+}
+
+/** Sync PowerShell with CREATE_NO_WINDOW. */
+function execPowerShell(extraArgs, opts = {}) {
+  return execFileSync("powershell.exe", [...PS_HIDDEN, ...extraArgs], {
+    windowsHide: true,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+    ...opts,
+  });
+}
 
 function readForceUpdateFlag() {
   try {
@@ -457,20 +532,26 @@ const healthServer = http.createServer(async (req, res) => {
           return;
         }
 
-        const uncRoot =
-          String(fileCfg.gameShareUnc || process.env.STELLA_GAME_SHARE_UNC || gameShareUncRoot || "").trim() ||
+        const configuredUnc =
+          String(fileCfg.gameShareUnc || process.env.STELLA_GAME_SHARE_UNC || liveGameShareUnc || gameShareUncRoot || "").trim() ||
           "\\\\HYDRALISK3\\Patriot\\Игры парк победы";
-        const uncFolder = joinWinPath(uncRoot, folder);
+        const resolved = resolveGameUncFolder(configuredUnc, folder);
+        const uncFolder = resolved.full;
+        const localName = resolved.localName || resolved.folder || "game";
+        if (!uncFolder || !resolved.folder) {
+          sendJson(res, 400, { ok: false, error: "Не удалось собрать путь к папке игры" });
+          return;
+        }
 
         fs.mkdirSync(omskekranRoot, { recursive: true });
         fs.mkdirSync(gamesRoot, { recursive: true });
 
-        const localFolder = path.join(gamesRoot, folder);
+        const localFolder = path.join(gamesRoot, localName);
         fs.mkdirSync(localFolder, { recursive: true });
 
         gameCopy = {
           status: "copying",
-          folder,
+          folder: localName,
           percent: null,
           copiedBytes: null,
           totalBytes: null,
@@ -543,7 +624,7 @@ const healthServer = http.createServer(async (req, res) => {
         if (!localExePath || !isPathInside(localFolder, localExePath)) {
           gameCopy = {
             status: "error",
-            folder,
+            folder: localName,
             percent: null,
             copiedBytes: null,
             totalBytes: null,
@@ -553,7 +634,7 @@ const healthServer = http.createServer(async (req, res) => {
           sendJson(res, 404, {
             ok: false,
             error: okCopy
-              ? `Игра не найдена: нет файла «${exe}» в папке «${folder}»`
+              ? `Игра не найдена: нет файла «${exe}» в «${uncFolder}»`
               : `Нет доступа к шаре или игра не скопирована (код ${robocode}). Проверьте «${uncFolder}»`,
           });
           return;
@@ -633,11 +714,7 @@ Write-Output 'ok'
 `;
 
         await new Promise((resolve, reject) => {
-          const ps = spawn(
-            "powershell.exe",
-            [...PS_HIDDEN, "-Command", script],
-            { windowsHide: true, stdio: "ignore" }
-          );
+          const ps = spawnPowerShell(["-Command", script]);
           ps.on("error", (err) => reject(err));
           ps.on("close", (code) => {
             if (code === 0) resolve(null);
@@ -739,6 +816,8 @@ const gameShareUncRoot = String(
 let gameShareFolders = [];
 let gameShareScanBusy = false;
 let lastGameShareScanAt = 0;
+/** Live UNC from server heartbeat (Settings → шара игр). */
+let liveGameShareUnc = gameShareUncRoot;
 
 async function walkFolderForExes(rootDir, folderBaseDir, depthLeft, out) {
   if (out.length >= 80) return;
@@ -766,14 +845,15 @@ async function scanGameShareFolders() {
   if (now - lastGameShareScanAt < 2 * 60 * 1000) return;
   gameShareScanBusy = true;
   try {
-    const top = await fs.promises.readdir(gameShareUncRoot, { withFileTypes: true }).catch(() => null);
+    const unc = normalizeUncPath(liveGameShareUnc || gameShareUncRoot);
+    const top = await fs.promises.readdir(unc, { withFileTypes: true }).catch(() => null);
     if (!top) return;
     const folders = [];
     for (const e of top) {
       if (!e.isDirectory()) continue;
       if (folders.length >= 200) break;
       const folderName = String(e.name);
-      const folderPath = joinWinPath(gameShareUncRoot, folderName);
+      const folderPath = joinWinPath(unc, folderName);
       const exes = [];
       await walkFolderForExes(folderPath, folderPath, 3, exes);
       // only keep folders that actually contain executables
@@ -811,6 +891,12 @@ async function pushHeartbeat() {
     if (!res.ok) return;
     try {
       const data = await res.json();
+      const uncFromServer = String(data.gameShareUnc || "").trim();
+      if (uncFromServer && uncFromServer !== liveGameShareUnc) {
+        liveGameShareUnc = normalizeUncPath(uncFromServer);
+        lastGameShareScanAt = 0;
+        void scanGameShareFolders();
+      }
       const target = String(data.targetSoftwareVersion || "").trim();
       if (
         data.updateAvailable &&
@@ -846,11 +932,7 @@ function copyRecursive(src, dest) {
 
 function runPowerShell(script) {
   return new Promise((resolve, reject) => {
-    const ps = spawn(
-      "powershell.exe",
-      [...PS_HIDDEN, "-Command", script],
-      { windowsHide: true }
-    );
+    const ps = spawnPowerShell(["-Command", script], { capture: true });
     let err = "";
     ps.stderr.on("data", (d) => {
       err += d.toString();
@@ -1198,14 +1280,12 @@ function clearStoppedIfFromPreviousBoot() {
     }
     if (!fs.existsSync(stopFlagPath)) return;
     const stoppedAt = fs.statSync(stopFlagPath).mtimeMs;
-    const out = execFileSync(
-      "powershell.exe",
+    const out = execPowerShell(
       [
-        ...PS_HIDDEN,
         "-Command",
         "[int64]([DateTimeOffset](Get-CimInstance Win32_OperatingSystem).LastBootUpTime).ToUnixTimeMilliseconds()",
       ],
-      { windowsHide: true, timeout: 8000, encoding: "utf8" }
+      { timeout: 8000 }
     );
     const bootMs = Number(String(out).trim());
     if (Number.isFinite(bootMs) && stoppedAt < bootMs) {
@@ -1277,14 +1357,12 @@ function isStopRequested() {
 function killEdgeUi() {
   const marker = `127.0.0.1:${uiPort}`;
   try {
-    execFileSync(
-      "powershell.exe",
+    execPowerShell(
       [
-        ...PS_HIDDEN,
         "-Command",
         `$m='${marker}'; Get-CimInstance Win32_Process -Filter "Name = 'msedge.exe'" -EA SilentlyContinue | ForEach-Object { if ($_.CommandLine -and $_.CommandLine -like "*$m*") { Stop-Process -Id $_.ProcessId -Force -EA SilentlyContinue } }`,
       ],
-      { windowsHide: true, timeout: 6_000 }
+      { timeout: 6_000 }
     );
   } catch {
     /* best effort */
@@ -1385,14 +1463,9 @@ exit 2
 
 function ensureConsoleUserCached() {
   try {
-    const out = execFileSync(
-      "powershell.exe",
-      [
-        ...PS_HIDDEN,
-        "-Command",
-        resolveInteractiveUserPs(readCachedConsoleUser()),
-      ],
-      { windowsHide: true, timeout: 10_000, encoding: "utf8" }
+    const out = execPowerShell(
+      ["-Command", resolveInteractiveUserPs(readCachedConsoleUser())],
+      { timeout: 10_000 }
     );
     const user = String(out || "").trim().split(/\r?\n/).filter(Boolean).pop();
     if (user && user !== "no-user") {
@@ -1482,25 +1555,23 @@ if ($user) {
   $tmp = Join-Path $env:TEMP ('stella-shell-show-' + [guid]::NewGuid().ToString('n') + '.ps1')
   Set-Content -Path $tmp -Value $inner -Encoding ASCII
   $once = 'StellaKioskShellChrome'
-  $arg = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + $tmp + '"'
-  $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $arg
-  $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances Parallel -ExecutionTimeLimit (New-TimeSpan -Minutes 2)
+  $vbs = Join-Path $env:TEMP ('stella-shell-show-' + [guid]::NewGuid().ToString('n') + '.vbs')
+  $psCmd = 'powershell.exe -NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $tmp.Replace('"','""') + '"'
+  Set-Content -Path $vbs -Value ('CreateObject("WScript.Shell").Run "' + $psCmd.Replace('"','""') + '", 0, False') -Encoding ASCII
+  $action = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument ('//B //Nologo "' + $vbs + '"')
+  $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances Parallel -ExecutionTimeLimit (New-TimeSpan -Minutes 2) -Hidden
   $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Highest
   Unregister-ScheduledTask -TaskName $once -Confirm:$false -ErrorAction SilentlyContinue
   Register-ScheduledTask -TaskName $once -Action $action -Principal $principal -Settings $settings -Force | Out-Null
   Start-ScheduledTask -TaskName $once -ErrorAction SilentlyContinue
   Start-Sleep -Milliseconds 900
   Unregister-ScheduledTask -TaskName $once -Confirm:$false -ErrorAction SilentlyContinue
-  Remove-Item -Path $tmp -Force -ErrorAction SilentlyContinue
+  Remove-Item -Path $tmp,$vbs -Force -ErrorAction SilentlyContinue
 }
 Write-Output ("explorer-shell ok=$ex")
 `;
   // Non-blocking — sync PowerShell here freezes OTA / health on the agent event loop
-  const ps = spawn(
-    "powershell.exe",
-    [...PS_HIDDEN, "-Command", script],
-    { windowsHide: true }
-  );
+  const ps = spawnPowerShell(["-Command", script]);
   ps.on("error", () => {});
   ps.on("close", (code) => {
     if (!explorerReady) {
@@ -1596,11 +1667,7 @@ Register-ScheduledTask -TaskName $once -Action $action -Principal $principal -Se
 Start-ScheduledTask -TaskName $once -ErrorAction Stop
 Write-Output "ok:$user"
 `;
-  const ps = spawn(
-    "powershell.exe",
-    [...PS_HIDDEN, "-Command", script2],
-    { windowsHide: true }
-  );
+  const ps = spawnPowerShell(["-Command", script2], { capture: true });
   let out = "";
   ps.stdout?.on("data", (d) => {
     out += d.toString();
@@ -1649,7 +1716,10 @@ async function watchEdgeUi() {
   try {
     if (updateInProgress) return;
     if (gameLaunchInProgress) return;
-    ensureConsoleUserCached();
+    // Do NOT call ensureConsoleUserCached() every tick — it spawns PowerShell and flashes a window.
+    if (!readCachedConsoleUser()) {
+      ensureConsoleUserCached();
+    }
     if (!explorerReady) ensureExplorerShell();
     const forceLaunch = consumeLaunchUiFlag();
     const running = await isEdgeKioskRunning();
@@ -1719,18 +1789,7 @@ function applyOsLockdownPolicies(enabled) {
   const mode = enabled ? "on" : "off";
   if (lastPoliciesMode === mode) return;
   lastPoliciesMode = mode;
-  const scriptPath = lockdownPoliciesPath.replace(/'/g, "''");
-  const ps = spawn(
-    "powershell.exe",
-    [
-      ...PS_HIDDEN,
-      "-File",
-      lockdownPoliciesPath,
-      "-Mode",
-      mode,
-    ],
-    { windowsHide: true }
-  );
+  const ps = spawnPowerShell(["-File", lockdownPoliciesPath, "-Mode", mode], { capture: true });
   let out = "";
   ps.stdout?.on("data", (d) => {
     out += d.toString();
@@ -1836,10 +1895,7 @@ if (Test-Path (Join-Path $env:ProgramData 'StellaKiosk\\BLOCK_KEYBOARD')) {
   }
 }
 `;
-  spawn("powershell.exe", [...PS_HIDDEN, "-Command", script], {
-    windowsHide: true,
-    stdio: "ignore",
-  });
+  spawnPowerShell(["-Command", script]);
 }
 
 function relaunchKeyBlock() {
@@ -1888,8 +1944,11 @@ $user = Resolve-User
 if (-not $user) { Write-Output 'no-user'; exit 2 }
 try { Set-Content -Path $cachePath -Value $user -Encoding ASCII -Force } catch {}
 
-$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ("-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \`"$ps1\`"")
-$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances Parallel -ExecutionTimeLimit ([TimeSpan]::Zero)
+$vbs = Join-Path $env:TEMP ('stella-keyblock-' + [guid]::NewGuid().ToString('n') + '.vbs')
+$psCmd = 'powershell.exe -NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $ps1.Replace('"','""') + '"'
+Set-Content -Path $vbs -Value ('CreateObject("WScript.Shell").Run "' + $psCmd.Replace('"','""') + '", 0, False') -Encoding ASCII
+$action = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument ('//B //Nologo "' + $vbs + '"')
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances Parallel -ExecutionTimeLimit ([TimeSpan]::Zero) -Hidden
 $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Highest
 $trigger = New-ScheduledTaskTrigger -AtLogOn
 
@@ -1905,11 +1964,7 @@ Register-ScheduledTask -TaskName $once -Action $action -Principal $principal -Se
 Start-ScheduledTask -TaskName $once -ErrorAction Stop
 Write-Output "ok:$user"
 `;
-  const ps = spawn(
-    "powershell.exe",
-    [...PS_HIDDEN, "-Command", script],
-    { windowsHide: true }
-  );
+  const ps = spawnPowerShell(["-Command", script], { capture: true });
   let out = "";
   ps.stdout?.on("data", (d) => {
     out += d.toString();
