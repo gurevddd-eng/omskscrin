@@ -71,11 +71,34 @@ export async function registerFileRoutes(app: FastifyInstance) {
       request.log.error({ full, mediaDir: config.mediaDir }, "media file missing on disk");
       return reply.code(404).send({ error: "File missing on disk" });
     }
-    const stream = createReadStream(full);
-    return reply
-      .header("Cache-Control", "public, max-age=86400")
-      .type(file.mimeType || "application/octet-stream")
-      .send(stream);
+    const size = Number(file.size) || 0;
+    const mime = file.mimeType || "application/octet-stream";
+    const range = String(request.headers.range || "");
+    reply.header("Accept-Ranges", "bytes");
+    reply.header("Cache-Control", "public, max-age=86400");
+    reply.type(mime);
+
+    if (range && size > 0) {
+      const m = /^bytes=(\d*)-(\d*)$/i.exec(range.trim());
+      if (m) {
+        let start = m[1] ? Number(m[1]) : 0;
+        let end = m[2] ? Number(m[2]) : size - 1;
+        if (!Number.isFinite(start)) start = 0;
+        if (!Number.isFinite(end) || end >= size) end = size - 1;
+        if (start > end || start >= size) {
+          return reply.code(416).header("Content-Range", `bytes */${size}`).send();
+        }
+        const chunk = end - start + 1;
+        return reply
+          .code(206)
+          .header("Content-Range", `bytes ${start}-${end}/${size}`)
+          .header("Content-Length", String(chunk))
+          .send(createReadStream(full, { start, end }));
+      }
+    }
+
+    if (size > 0) reply.header("Content-Length", String(size));
+    return reply.send(createReadStream(full));
   });
 
   app.get(

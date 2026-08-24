@@ -2033,15 +2033,17 @@ img {
 .player__seek {
   display: block;
   width: 100%;
+  touch-action: none;
 }
 
 .player__seek input[type="range"] {
-  height: 28px;
+  height: 36px;
   margin: 0;
   cursor: pointer;
   background: transparent;
   -webkit-appearance: none;
   appearance: none;
+  touch-action: none;
 }
 
 .player__seek input[type="range"]::-webkit-slider-runnable-track {

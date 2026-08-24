@@ -22,6 +22,86 @@ process.on("unhandledRejection", (err) => {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = __dirname;
 
+/** Join UNC / Windows paths without path.join eating the leading \\. */
+function joinWinPath(...parts) {
+  const cleaned = parts
+    .map((p, i) => {
+      let s = String(p || "").replace(/\//g, "\\");
+      if (i === 0) return s.replace(/[\\\/]+$/, "");
+      return s.replace(/^[\\\/]+/, "").replace(/[\\\/]+$/, "");
+    })
+    .filter((s, i) => s || i === 0);
+  if (!cleaned.length) return "";
+  const head = cleaned[0];
+  const rest = cleaned.slice(1).filter(Boolean);
+  if (!rest.length) return head;
+  return `${head}\\${rest.join("\\")}`;
+}
+
+function isPathInside(parent, child) {
+  const p = path.resolve(parent).toLowerCase();
+  const c = path.resolve(child).toLowerCase();
+  const sep = path.sep.toLowerCase() === "\\" ? "\\" : path.sep;
+  return c === p || c.startsWith(p.endsWith(sep) ? p : p + sep);
+}
+
+/** Serve local file with HTTP Range (required for HTML5 video seek). */
+function serveFileWithRanges(req, res, filePath, contentType) {
+  let st;
+  try {
+    st = fs.statSync(filePath);
+  } catch {
+    res.writeHead(404, { "Content-Type": "application/json; charset=utf-8" });
+    res.end(JSON.stringify({ error: "Media not found" }));
+    return;
+  }
+  const size = st.size;
+  const mime = contentType || "application/octet-stream";
+  const range = String(req.headers.range || "");
+  const baseHeaders = {
+    "Content-Type": mime,
+    "Accept-Ranges": "bytes",
+    "Access-Control-Allow-Origin": "*",
+    "Cache-Control": "public, max-age=3600",
+  };
+
+  if (range) {
+    const m = /^bytes=(\d*)-(\d*)$/i.exec(range.trim());
+    if (m) {
+      let start = m[1] ? Number(m[1]) : 0;
+      let end = m[2] ? Number(m[2]) : size - 1;
+      if (!Number.isFinite(start)) start = 0;
+      if (!Number.isFinite(end) || end >= size) end = size - 1;
+      if (start > end || start >= size) {
+        res.writeHead(416, { ...baseHeaders, "Content-Range": `bytes */${size}` });
+        res.end();
+        return;
+      }
+      const chunk = end - start + 1;
+      res.writeHead(206, {
+        ...baseHeaders,
+        "Content-Range": `bytes ${start}-${end}/${size}`,
+        "Content-Length": String(chunk),
+      });
+      fs.createReadStream(filePath, { start, end }).pipe(res);
+      return;
+    }
+  }
+
+  res.writeHead(200, { ...baseHeaders, "Content-Length": String(size) });
+  fs.createReadStream(filePath).pipe(res);
+}
+
+function processExists(pid) {
+  if (!pid || !Number.isFinite(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** PowerShell Set-Content -Encoding UTF8 writes a BOM that breaks JSON.parse. */
 function stripBom(s) {
   return s.charCodeAt(0) === 0xfeff ? s.slice(1) : s;
@@ -87,6 +167,9 @@ let updateFailCount = 0;
 let nextUpdateAllowedAt = 0;
 let gameLaunchInProgress = false;
 let lastHeartbeatAt = 0;
+let lastSpaContactAt = 0;
+let lastKeyblockRelaunchAt = 0;
+let lastEdgeRelaunchAt = 0;
 let gameCopy = {
   status: "idle",
   folder: null,
@@ -223,6 +306,8 @@ const healthServer = http.createServer(async (req, res) => {
   }
 
   if (req.method === "GET" && url.pathname === "/health") {
+    // SPA polls this every ~3s while Edge UI is open — used instead of PowerShell process scans
+    lastSpaContactAt = Date.now();
     sendJson(res, 200, {
       ok: true,
       hostname,
@@ -260,16 +345,12 @@ const healthServer = http.createServer(async (req, res) => {
     const diskPath = path.join(contentRoot, safeName);
     const metaPath = `${diskPath}.meta.json`;
 
-    // Fast path: local disk cache
+    // Fast path: local disk cache (with Range — needed for video scrubbing)
     try {
       if (fs.existsSync(diskPath) && fs.existsSync(metaPath)) {
         const meta = JSON.parse(fs.readFileSync(metaPath, "utf8"));
         const ct = meta?.mimeType || "application/octet-stream";
-        res.writeHead(200, {
-          "Content-Type": ct,
-          "Access-Control-Allow-Origin": "*",
-        });
-        fs.createReadStream(diskPath).pipe(res);
+        serveFileWithRanges(req, res, diskPath, ct);
         return;
       }
     } catch {
@@ -285,32 +366,25 @@ const healthServer = http.createServer(async (req, res) => {
         return;
       }
       const ct = r.headers.get("content-type") || "application/octet-stream";
-      res.writeHead(200, {
-        "Content-Type": ct,
-        "Access-Control-Allow-Origin": "*",
-      });
-
-      if (!r.body) {
-        res.end();
+      const buf = Buffer.from(await r.arrayBuffer());
+      try {
+        fs.writeFileSync(diskPath, buf);
+        fs.writeFileSync(metaPath, JSON.stringify({ mimeType: ct, size: buf.length }), "utf8");
+      } catch {
+        /* ignore cache write errors — still serve */
+      }
+      // After first full download, serve via Range-capable path
+      if (fs.existsSync(diskPath)) {
+        serveFileWithRanges(req, res, diskPath, ct);
         return;
       }
-
-      const ws = fs.createWriteStream(diskPath);
-      const pass = new PassThrough();
-      pass.pipe(ws);
-      pass.pipe(res);
-
-      await pipeline(Readable.fromWeb(r.body), pass);
-      try {
-        ws.close?.();
-      } catch {
-        /* ignore */
-      }
-      try {
-        fs.writeFileSync(metaPath, JSON.stringify({ mimeType: ct }), "utf8");
-      } catch {
-        /* ignore */
-      }
+      res.writeHead(200, {
+        "Content-Type": ct,
+        "Accept-Ranges": "bytes",
+        "Content-Length": String(buf.length),
+        "Access-Control-Allow-Origin": "*",
+      });
+      res.end(buf);
     } catch (e) {
       sendJson(res, 500, { error: e instanceof Error ? e.message : String(e) });
     }
@@ -370,7 +444,7 @@ const healthServer = http.createServer(async (req, res) => {
     });
     req.on("end", async () => {
       if (updateInProgress || gameLaunchInProgress || isStopRequested()) {
-        sendJson(res, 423, { ok: false, error: "Busy" });
+        sendJson(res, 423, { ok: false, error: "Киоск занят, попробуйте позже" });
         return;
       }
 
@@ -379,18 +453,30 @@ const healthServer = http.createServer(async (req, res) => {
         const folder = String(body.folder || "").trim();
         const exe = String(body.exe || "").trim();
         if (!folder || !exe) {
-          sendJson(res, 400, { ok: false, error: "folder and exe required" });
+          sendJson(res, 400, { ok: false, error: "Не указаны папка и файл игры" });
           return;
         }
 
-        const uncRoot = process.env.STELLA_GAME_SHARE_UNC || "\\\\HYDRALISK3\\Patriot\\Игры парк победы";
-        const uncFolder = path.join(uncRoot, folder);
+        const uncRoot =
+          String(fileCfg.gameShareUnc || process.env.STELLA_GAME_SHARE_UNC || gameShareUncRoot || "").trim() ||
+          "\\\\HYDRALISK3\\Patriot\\Игры парк победы";
+        const uncFolder = joinWinPath(uncRoot, folder);
 
         fs.mkdirSync(omskekranRoot, { recursive: true });
         fs.mkdirSync(gamesRoot, { recursive: true });
 
         const localFolder = path.join(gamesRoot, folder);
         fs.mkdirSync(localFolder, { recursive: true });
+
+        gameCopy = {
+          status: "copying",
+          folder,
+          percent: null,
+          copiedBytes: null,
+          totalBytes: null,
+          message: `Копирование с ${uncFolder}`,
+          updatedAt: new Date().toISOString(),
+        };
 
         // Incremental copy (best-effort). If share is down — keep last copy.
         const runRobocopy = () =>
@@ -402,8 +488,8 @@ const healthServer = http.createServer(async (req, res) => {
               "/COPY:DAT",
               "/DCOPY:DAT",
               "/XO",
-              "/R:2",
-              "/W:5",
+              "/R:1",
+              "/W:2",
               "/NFL",
               "/NDL",
               "/NJH",
@@ -419,28 +505,76 @@ const healthServer = http.createServer(async (req, res) => {
         // Robocopy: 0..7 are success (0=no change, 1..7 are copied/needs attention)
         const okCopy = robocode >= 0 && robocode <= 7;
         if (!okCopy) {
-          console.warn(`[stella-agent] robocopy non-zero code=${robocode}; continue with last copy`);
+          console.warn(`[stella-agent] robocopy code=${robocode} unc=${uncFolder}`);
         }
 
-        // Resolve local exe path securely within localFolder
         const safeExeRel = exe.replace(/[\/\\]+/g, path.sep);
-        const localExePath = path.resolve(path.join(localFolder, safeExeRel));
-        const localRoot = path.resolve(localFolder);
-        if (!localExePath.startsWith(localRoot)) {
-          sendJson(res, 400, { ok: false, error: "Invalid exe path" });
+        const candidates = [
+          path.resolve(path.join(localFolder, safeExeRel)),
+          path.resolve(path.join(localFolder, path.basename(safeExeRel))),
+        ];
+        let localExePath = candidates.find((p) => isPathInside(localFolder, p) && fs.existsSync(p)) || null;
+        if (!localExePath) {
+          // Fallback: search by basename under copied folder (depth 4)
+          const want = path.basename(safeExeRel).toLowerCase();
+          const stack = [localFolder];
+          let depth = 0;
+          while (stack.length && depth < 200) {
+            depth += 1;
+            const dir = stack.pop();
+            let entries = [];
+            try {
+              entries = fs.readdirSync(dir, { withFileTypes: true });
+            } catch {
+              continue;
+            }
+            for (const e of entries) {
+              const full = path.join(dir, e.name);
+              if (e.isFile() && e.name.toLowerCase() === want) {
+                localExePath = full;
+                break;
+              }
+              if (e.isDirectory() && !e.name.startsWith(".")) stack.push(full);
+            }
+            if (localExePath) break;
+          }
+        }
+
+        if (!localExePath || !isPathInside(localFolder, localExePath)) {
+          gameCopy = {
+            status: "error",
+            folder,
+            percent: null,
+            copiedBytes: null,
+            totalBytes: null,
+            message: `Игра не найдена (robocopy=${robocode})`,
+            updatedAt: new Date().toISOString(),
+          };
+          sendJson(res, 404, {
+            ok: false,
+            error: okCopy
+              ? `Игра не найдена: нет файла «${exe}» в папке «${folder}»`
+              : `Нет доступа к шаре или игра не скопирована (код ${robocode}). Проверьте «${uncFolder}»`,
+          });
           return;
         }
-        if (!fs.existsSync(localExePath)) {
-          sendJson(res, 404, { ok: false, error: "Game exe not found on disk" });
-          return;
-        }
+
+        gameCopy = {
+          status: "launching",
+          folder,
+          percent: 100,
+          copiedBytes: null,
+          totalBytes: null,
+          message: path.basename(localExePath),
+          updatedAt: new Date().toISOString(),
+        };
 
         gameLaunchInProgress = true;
         killEdgeUi();
 
         const cached = readCachedConsoleUser() || "";
         const exeEsc = String(localExePath).replace(/'/g, "''");
-        const cwdEsc = String(localFolder).replace(/'/g, "''");
+        const cwdEsc = String(path.dirname(localExePath)).replace(/'/g, "''");
         const cachedEsc = String(cached).replace(/'/g, "''");
 
         const taskName = `StellaKioskGameOnce`;
@@ -487,7 +621,6 @@ $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddSeconds(2)
 Register-ScheduledTask -TaskName $task -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force | Out-Null
 Start-ScheduledTask -TaskName $task -ErrorAction Stop | Out-Null
 
-# Wait until scheduled task finishes (game exit)
 for ($i=0; $i -lt 200000; $i++) {
   $info = Get-ScheduledTaskInfo -TaskName $task -ErrorAction SilentlyContinue
   if (-not $info) { break }
@@ -503,20 +636,43 @@ Write-Output 'ok'
           const ps = spawn(
             "powershell.exe",
             [...PS_HIDDEN, "-Command", script],
-            { windowsHide: true }
+            { windowsHide: true, stdio: "ignore" }
           );
           ps.on("error", (err) => reject(err));
           ps.on("close", (code) => {
             if (code === 0) resolve(null);
-            else reject(new Error(`Game scheduled task failed code=${code}`));
+            else reject(new Error(code === 2 ? "Нет пользователя за консолью" : `Не удалось запустить игру (код ${code})`));
           });
         });
 
+        gameCopy = {
+          status: "idle",
+          folder,
+          percent: null,
+          copiedBytes: null,
+          totalBytes: null,
+          message: null,
+          updatedAt: new Date().toISOString(),
+        };
         relaunchEdgeUi();
         gameLaunchInProgress = false;
         sendJson(res, 200, { ok: true });
       } catch (e) {
         gameLaunchInProgress = false;
+        gameCopy = {
+          status: "error",
+          folder: null,
+          percent: null,
+          copiedBytes: null,
+          totalBytes: null,
+          message: e instanceof Error ? e.message : String(e),
+          updatedAt: new Date().toISOString(),
+        };
+        try {
+          relaunchEdgeUi();
+        } catch {
+          /* ignore */
+        }
         sendJson(res, 500, { ok: false, error: e instanceof Error ? e.message : String(e) });
       }
     });
@@ -617,7 +773,7 @@ async function scanGameShareFolders() {
       if (!e.isDirectory()) continue;
       if (folders.length >= 200) break;
       const folderName = String(e.name);
-      const folderPath = path.join(gameShareUncRoot, folderName);
+      const folderPath = joinWinPath(gameShareUncRoot, folderName);
       const exes = [];
       await walkFolderForExes(folderPath, folderPath, 3, exes);
       // only keep folders that actually contain executables
@@ -1160,20 +1316,9 @@ function applySoftwareEnabledSetting(enabled) {
 }
 
 function isEdgeKioskRunning() {
-  return new Promise((resolve) => {
-    const marker = `127.0.0.1:${uiPort}`;
-    const ps = spawn(
-      "powershell.exe",
-      [
-        ...PS_HIDDEN,
-        "-Command",
-        `$m='${marker}'; $ok=$false; Get-CimInstance Win32_Process -Filter \"Name = 'msedge.exe'\" -ErrorAction SilentlyContinue | ForEach-Object { if ($_.CommandLine -and $_.CommandLine -like \"*$m*\") { $ok=$true } }; if ($ok) { exit 0 } else { exit 1 }`,
-      ],
-      { windowsHide: true }
-    );
-    ps.on("close", (code) => resolve(code === 0));
-    ps.on("error", () => resolve(false));
-  });
+  // Prefer SPA /health pings (no PowerShell window). Fall back only if silent too long.
+  if (Date.now() - lastSpaContactAt < 12_000) return Promise.resolve(true);
+  return Promise.resolve(false);
 }
 
 const consoleUserPath = path.join(
@@ -1509,12 +1654,18 @@ async function watchEdgeUi() {
     const forceLaunch = consumeLaunchUiFlag();
     const running = await isEdgeKioskRunning();
     if (forceLaunch || !running) {
-      console.warn(
-        forceLaunch
-          ? "[stella-agent] LAUNCH_UI flag — starting Edge"
-          : "[stella-agent] Edge UI missing — restarting (close only from admin)"
-      );
-      relaunchEdgeUi();
+      const now = Date.now();
+      if (!forceLaunch && now - lastEdgeRelaunchAt < 20_000) {
+        /* wait for SPA health ping / Edge boot */
+      } else {
+        lastEdgeRelaunchAt = now;
+        console.warn(
+          forceLaunch
+            ? "[stella-agent] LAUNCH_UI flag — starting Edge"
+            : "[stella-agent] Edge UI missing — restarting (close only from admin)"
+        );
+        relaunchEdgeUi();
+      }
     }
     await ensureKeyBlockRunning();
   } catch (e) {
@@ -1627,21 +1778,43 @@ function applyBlockKeyboardSetting(enabled) {
 
 function isKeyBlockRunning() {
   return new Promise((resolve) => {
-    const ps = spawn(
-      "powershell.exe",
-      [
-        ...PS_HIDDEN,
-        "-Command",
-        `$ok=$false; Get-CimInstance Win32_Process -Filter \"Name = 'powershell.exe'\" -ErrorAction SilentlyContinue | ForEach-Object { if ($_.CommandLine -and $_.CommandLine -like '*block-hotkeys.ps1*') { $ok=$true } }; if ($ok) { exit 0 } else { exit 1 }`,
-      ],
-      { windowsHide: true }
-    );
-    ps.on("close", (code) => resolve(code === 0));
-    ps.on("error", () => resolve(false));
+    try {
+      const pidPath = path.join(programDataRoot, "KEYBLOCK.pid");
+      if (fs.existsSync(pidPath)) {
+        const pid = Number(String(fs.readFileSync(pidPath, "utf8")).trim());
+        if (processExists(pid)) {
+          resolve(true);
+          return;
+        }
+      }
+    } catch {
+      /* fall through */
+    }
+    resolve(false);
   });
 }
 
 function stopKeyBlockProcesses() {
+  try {
+    const pidPath = path.join(programDataRoot, "KEYBLOCK.pid");
+    if (fs.existsSync(pidPath)) {
+      const pid = Number(String(fs.readFileSync(pidPath, "utf8")).trim());
+      if (processExists(pid)) {
+        try {
+          process.kill(pid);
+        } catch {
+          /* ignore */
+        }
+      }
+      try {
+        fs.unlinkSync(pidPath);
+      } catch {
+        /* ignore */
+      }
+    }
+  } catch {
+    /* ignore */
+  }
   const script = `
 Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe'" -ErrorAction SilentlyContinue | ForEach-Object {
   if ($_.CommandLine -and $_.CommandLine -like '*block-hotkeys.ps1*') {
@@ -1665,6 +1838,7 @@ if (Test-Path (Join-Path $env:ProgramData 'StellaKiosk\\BLOCK_KEYBOARD')) {
 `;
   spawn("powershell.exe", [...PS_HIDDEN, "-Command", script], {
     windowsHide: true,
+    stdio: "ignore",
   });
 }
 
@@ -1754,7 +1928,12 @@ async function ensureKeyBlockRunning() {
   if (isStopRequested() || !wantKeyBlock || isLockdownSuppressed()) return;
   if (!readBlockKeyboardFlag()) return;
   const running = await isKeyBlockRunning();
-  if (!running) relaunchKeyBlock();
+  if (running) return;
+  const now = Date.now();
+  // Avoid spawning PowerShell every watchdog tick when keyblock keeps failing
+  if (now - lastKeyblockRelaunchAt < 45_000) return;
+  lastKeyblockRelaunchAt = now;
+  relaunchKeyBlock();
 }
 
 // Respect manual policy clear + flag file on disk

@@ -9,6 +9,27 @@ $ErrorActionPreference = "Stop"
 $root = Join-Path $env:ProgramData "StellaKiosk"
 $stopFlag = Join-Path $root "STOPPED"
 $blockFlag = Join-Path $root "BLOCK_KEYBOARD"
+$pidFile = Join-Path $root "KEYBLOCK.pid"
+
+function Write-KeyblockPid {
+  try {
+    New-Item -ItemType Directory -Path $root -Force | Out-Null
+    Set-Content -LiteralPath $pidFile -Value $PID -Encoding ASCII -Force
+  } catch {}
+}
+
+function Clear-KeyblockPid {
+  try {
+    if (Test-Path -LiteralPath $pidFile) {
+      $cur = (Get-Content -LiteralPath $pidFile -Raw -ErrorAction SilentlyContinue).Trim()
+      if (-not $cur -or $cur -eq [string]$PID) {
+        Remove-Item -LiteralPath $pidFile -Force -ErrorAction SilentlyContinue
+      }
+    }
+  } catch {}
+}
+
+Write-KeyblockPid
 
 function Should-Run {
   if (Test-Path -LiteralPath $stopFlag) { return $false }
@@ -37,6 +58,7 @@ function Clear-TaskMgrPolicy {
 
 if (-not (Should-Run)) {
   Clear-TaskMgrPolicy
+  Clear-KeyblockPid
   Write-Output "keyblock skipped"
   exit 0
 }
@@ -241,5 +263,6 @@ try {
   [StellaHotkeyBlock]::Run($stopFlag, $blockFlag)
 } finally {
   Clear-TaskMgrPolicy
+  Clear-KeyblockPid
   Write-Output "keyblock stopped"
 }

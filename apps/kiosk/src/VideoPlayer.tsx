@@ -23,6 +23,7 @@ export function VideoPlayer({ src, active, title }: Props) {
   const [seeking, setSeeking] = useState(false);
   const [controlsVisible, setControlsVisible] = useState(true);
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const seekValue = useRef(0);
 
   const bumpControls = useCallback(() => {
     setControlsVisible(true);
@@ -52,6 +53,7 @@ export function VideoPlayer({ src, active, title }: Props) {
     el.currentTime = 0;
     setPlaying(false);
     setCurrent(0);
+    setDuration(0);
     setControlsVisible(true);
   }, [src]);
 
@@ -120,7 +122,11 @@ export function VideoPlayer({ src, active, title }: Props) {
       const el = videoRef.current;
       if (!el || !duration) return;
       const next = Math.min(Math.max(0, el.currentTime + delta), duration);
-      el.currentTime = next;
+      try {
+        el.currentTime = next;
+      } catch {
+        /* ignore seek errors while buffering */
+      }
       setCurrent(next);
       bumpControls();
     },
@@ -136,10 +142,19 @@ export function VideoPlayer({ src, active, title }: Props) {
   function onLoadedMeta() {
     const el = videoRef.current;
     if (!el) return;
-    setDuration(el.duration || 0);
+    const d = el.duration;
+    setDuration(Number.isFinite(d) ? d : 0);
+  }
+
+  function onDurationChange() {
+    const el = videoRef.current;
+    if (!el) return;
+    const d = el.duration;
+    if (Number.isFinite(d) && d > 0) setDuration(d);
   }
 
   function onSeekInput(value: number) {
+    seekValue.current = value;
     setCurrent(value);
     setSeeking(true);
     bumpControls();
@@ -147,8 +162,15 @@ export function VideoPlayer({ src, active, title }: Props) {
 
   function onSeekCommit(value: number) {
     const el = videoRef.current;
-    if (el) el.currentTime = value;
-    setCurrent(value);
+    const next = Number.isFinite(value) ? value : seekValue.current;
+    if (el && Number.isFinite(next)) {
+      try {
+        el.currentTime = next;
+      } catch {
+        /* Range not ready yet */
+      }
+    }
+    setCurrent(next);
     setSeeking(false);
     bumpControls();
   }
@@ -170,6 +192,7 @@ export function VideoPlayer({ src, active, title }: Props) {
 
   const progress = duration > 0 ? (current / duration) * 100 : 0;
   const volPct = (muted ? 0 : volume) * 100;
+  const canSeek = duration > 0 && Number.isFinite(duration);
 
   return (
     <div
@@ -190,6 +213,7 @@ export function VideoPlayer({ src, active, title }: Props) {
           preload="auto"
           onTimeUpdate={onTimeUpdate}
           onLoadedMetadata={onLoadedMeta}
+          onDurationChange={onDurationChange}
           onPlay={() => setPlaying(true)}
           onPause={() => setPlaying(false)}
           onEnded={() => {
@@ -209,18 +233,28 @@ export function VideoPlayer({ src, active, title }: Props) {
       <div className="player__dock">
         {title ? <p className="player__caption">{title}</p> : null}
 
-        <label className="player__seek">
+        <label
+          className="player__seek"
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => e.stopPropagation()}
+        >
           <span className="sr-only">Перемотка</span>
           <input
             type="range"
             min={0}
-            max={duration || 0}
+            max={canSeek ? duration : 1}
             step={0.1}
             value={Number.isFinite(current) ? current : 0}
-            disabled={!duration}
+            disabled={!canSeek}
             style={{ ["--progress" as string]: `${progress}%` }}
             onChange={(e) => onSeekInput(Number(e.target.value))}
+            onPointerDown={() => {
+              setSeeking(true);
+              bumpControls();
+            }}
             onPointerUp={(e) => onSeekCommit(Number((e.target as HTMLInputElement).value))}
+            onPointerCancel={(e) => onSeekCommit(Number((e.target as HTMLInputElement).value))}
+            onTouchEnd={(e) => onSeekCommit(Number((e.target as HTMLInputElement).value))}
             onKeyUp={(e) => onSeekCommit(Number((e.target as HTMLInputElement).value))}
           />
         </label>
@@ -231,7 +265,7 @@ export function VideoPlayer({ src, active, title }: Props) {
               type="button"
               className="player__chip"
               onClick={() => seekBy(-10)}
-              disabled={!duration}
+              disabled={!canSeek}
               aria-label="Назад 10 секунд"
             >
               −10
@@ -248,7 +282,7 @@ export function VideoPlayer({ src, active, title }: Props) {
               type="button"
               className="player__chip"
               onClick={() => seekBy(10)}
-              disabled={!duration}
+              disabled={!canSeek}
               aria-label="Вперёд 10 секунд"
             >
               +10
