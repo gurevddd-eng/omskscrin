@@ -546,7 +546,7 @@ const healthServer = http.createServer(async (req, res) => {
         fs.mkdirSync(omskekranRoot, { recursive: true });
         fs.mkdirSync(gamesRoot, { recursive: true });
 
-        const localFolder = path.join(gameRoot, localName);
+        const localFolder = path.join(gamesRoot, localName);
         fs.mkdirSync(localFolder, { recursive: true });
 
         // Strip accidental folder/UNC prefix from exe (admin sometimes pastes full path)
@@ -583,63 +583,58 @@ const healthServer = http.createServer(async (req, res) => {
             const dstEsc = String(localFolder).replace(/'/g, "''");
             const codeEsc = String(codeFile).replace(/'/g, "''");
             const cachedEsc = String(readCachedConsoleUser() || "").replace(/'/g, "''");
-            const script = `
-$ErrorActionPreference = 'SilentlyContinue'
-function Resolve-User {
-  $cs = Get-CimInstance Win32_ComputerSystem
-  if ($cs -and $cs.UserName) { return $cs.UserName }
-  $proc = Get-CimInstance Win32_Process -Filter "Name = 'explorer.exe'" | Select-Object -First 1
-  if ($proc) {
-    $o = Invoke-CimMethod -InputObject $proc -MethodName GetOwner -ErrorAction SilentlyContinue
-    if ($o -and $o.User) {
-      if ($o.Domain) { return "$($o.Domain)\\$($o.User)" }
-      return $o.User
-    }
-  }
-  $cached = '${cachedEsc}'
-  if ($cached) { return $cached }
-  return $null
-}
-$user = Resolve-User
-$codeOut = '${codeEsc}'
-$src = '${srcEsc}'
-$dst = '${dstEsc}'
-if (-not $user) {
-  Set-Content -LiteralPath $codeOut -Value '16' -Encoding ASCII
-  exit 2
-}
-New-Item -ItemType Directory -Force -Path $dst | Out-Null
-$bat = Join-Path $env:TEMP ('stella-robo-' + [guid]::NewGuid().ToString('n') + '.cmd')
-$srcBat = $src.Replace('"','')
-$dstBat = $dst.Replace('"','')
-$codeBat = $codeOut.Replace('"','')
-@(
-  '@echo off',
-  ('robocopy "' + $srcBat + '" "' + $dstBat + '" /E /COPY:DAT /DCOPY:DAT /XO /R:1 /W:2 /NFL /NDL /NJH /NJS /NP'),
-  ('echo %ERRORLEVEL%>"' + $codeBat + '"')
-) | Set-Content -LiteralPath $bat -Encoding ASCII
-$task = 'StellaKioskRoboOnce'
-try { Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue | Out-Null } catch {}
-$action = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument ('/c "' + $bat + '"')
-$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances Parallel -ExecutionTimeLimit (New-TimeSpan -Minutes 120) -Hidden
-$principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Highest
-Register-ScheduledTask -TaskName $task -Action $action -Settings $settings -Principal $principal -Force | Out-Null
-Start-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue | Out-Null
-for ($i=0; $i -lt 7200; $i++) {
-  if (Test-Path -LiteralPath $codeOut) { break }
-  $info = Get-ScheduledTaskInfo -TaskName $task -ErrorAction SilentlyContinue
-  if ($info -and $info.State -ne 'Running' -and $i -gt 2) {
-    Start-Sleep -Milliseconds 400
-    if (Test-Path -LiteralPath $codeOut) { break }
-    if (-not (Test-Path -LiteralPath $codeOut)) { Set-Content -LiteralPath $codeOut -Value '16' -Encoding ASCII }
-    break
-  }
-  Start-Sleep -Milliseconds 500
-}
-try { Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue | Out-Null } catch {}
-Remove-Item -LiteralPath $bat -Force -ErrorAction SilentlyContinue
-if (-not (Test-Path -LiteralPath $codeOut)) { Set-Content -LiteralPath $codeOut -Value '16' -Encoding ASCII }
-`;
+            // Note: JS template literal — do not put backticks inside this string.
+            const script =
+              "$ErrorActionPreference = 'SilentlyContinue'\n" +
+              "function Resolve-User {\n" +
+              "  $cs = Get-CimInstance Win32_ComputerSystem\n" +
+              "  if ($cs -and $cs.UserName) { return $cs.UserName }\n" +
+              "  $proc = Get-CimInstance Win32_Process -Filter \"Name = 'explorer.exe'\" | Select-Object -First 1\n" +
+              "  if ($proc) {\n" +
+              "    $o = Invoke-CimMethod -InputObject $proc -MethodName GetOwner -ErrorAction SilentlyContinue\n" +
+              "    if ($o -and $o.User) {\n" +
+              "      if ($o.Domain) { return \"$($o.Domain)\\$($o.User)\" }\n" +
+              "      return $o.User\n" +
+              "    }\n" +
+              "  }\n" +
+              "  $cached = '" +
+              cachedEsc +
+              "'\n" +
+              "  if ($cached) { return $cached }\n" +
+              "  return $null\n" +
+              "}\n" +
+              "$user = Resolve-User\n" +
+              "$codeOut = '" +
+              codeEsc +
+              "'\n" +
+              "$src = '" +
+              srcEsc +
+              "'\n" +
+              "$dst = '" +
+              dstEsc +
+              "'\n" +
+              "if (-not $user) { Set-Content -LiteralPath $codeOut -Value '16' -Encoding ASCII -NoNewline; exit 2 }\n" +
+              "if (-not (Test-Path -LiteralPath $src)) { Set-Content -LiteralPath $codeOut -Value '16' -Encoding ASCII -NoNewline; exit 3 }\n" +
+              "New-Item -ItemType Directory -Force -Path $dst | Out-Null\n" +
+              "$task = 'StellaKioskRoboOnce'\n" +
+              "try { Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue | Out-Null } catch {}\n" +
+              "$arg = ('\"' + $src + '\" \"' + $dst + '\" /E /COPY:DAT /DCOPY:DAT /XO /R:1 /W:2 /NFL /NDL /NJH /NJS /NP')\n" +
+              "$action = New-ScheduledTaskAction -Execute 'robocopy.exe' -Argument $arg\n" +
+              "$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances Parallel -ExecutionTimeLimit (New-TimeSpan -Minutes 180) -Hidden\n" +
+              "$principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited\n" +
+              "Register-ScheduledTask -TaskName $task -Action $action -Settings $settings -Principal $principal -Force | Out-Null\n" +
+              "Start-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue | Out-Null\n" +
+              "for ($i=0; $i -lt 10800; $i++) {\n" +
+              "  $info = Get-ScheduledTaskInfo -TaskName $task -ErrorAction SilentlyContinue\n" +
+              "  if ($info -and $info.State -ne 'Running') { break }\n" +
+              "  Start-Sleep -Milliseconds 500\n" +
+              "}\n" +
+              "Start-Sleep -Milliseconds 400\n" +
+              "$info = Get-ScheduledTaskInfo -TaskName $task -ErrorAction SilentlyContinue\n" +
+              "$code = 16\n" +
+              "if ($info -and ($null -ne $info.LastTaskResult)) { $code = [int]$info.LastTaskResult }\n" +
+              "Set-Content -LiteralPath $codeOut -Value ([string]$code) -Encoding ASCII -NoNewline\n" +
+              "try { Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue | Out-Null } catch {}\n";
             const ps = spawnPowerShell(["-Command", script]);
             ps.on("error", () => resolve(16));
             ps.on("close", () => {
@@ -728,67 +723,117 @@ if (-not (Test-Path -LiteralPath $codeOut)) { Set-Content -LiteralPath $codeOut 
         };
 
         gameLaunchInProgress = true;
-        killEdgeUi();
+        // Keep Edge kiosk running; game is started in the console session and raised on top.
 
         const cached = readCachedConsoleUser() || "";
         const exeEsc = String(localExePath).replace(/'/g, "''");
         const cwdEsc = String(path.dirname(localExePath)).replace(/'/g, "''");
         const cachedEsc = String(cached).replace(/'/g, "''");
+        const exeName = path.basename(localExePath, path.extname(localExePath));
+        const helperPath = path.join(omskekranRoot, "_launch_game_once.ps1");
+        const helperBody =
+          "$ErrorActionPreference = 'SilentlyContinue'\n" +
+          `$exe = '${exeEsc}'\n` +
+          `$cwd = '${cwdEsc}'\n` +
+          `$exeName = '${String(exeName).replace(/'/g, "''")}'\n` +
+          "Start-Process -FilePath $exe -WorkingDirectory $cwd | Out-Null\n" +
+          "Add-Type @\"\n" +
+          "using System;\n" +
+          "using System.Runtime.InteropServices;\n" +
+          "public static class StellaGameTop {\n" +
+          "  public static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);\n" +
+          "  [DllImport(\"user32.dll\")] public static extern bool SetForegroundWindow(IntPtr hWnd);\n" +
+          "  [DllImport(\"user32.dll\")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);\n" +
+          "  [DllImport(\"user32.dll\")] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);\n" +
+          "  [DllImport(\"user32.dll\")] public static extern bool BringWindowToTop(IntPtr hWnd);\n" +
+          "}\n" +
+          "\"@\n" +
+          "function Raise-GameWindow {\n" +
+          "  foreach ($gp in Get-Process -Name $exeName -ErrorAction SilentlyContinue) {\n" +
+          "    $h = $gp.MainWindowHandle\n" +
+          "    if ($h -eq [IntPtr]::Zero) { continue }\n" +
+          "    [void][StellaGameTop]::ShowWindow($h, 9)\n" +
+          "    [void][StellaGameTop]::SetWindowPos($h, [StellaGameTop]::HWND_TOPMOST, 0, 0, 0, 0, 0x0003)\n" +
+          "    [void][StellaGameTop]::BringWindowToTop($h)\n" +
+          "    [void][StellaGameTop]::SetForegroundWindow($h)\n" +
+          "    return $true\n" +
+          "  }\n" +
+          "  return $false\n" +
+          "}\n" +
+          "for ($i=0; $i -lt 60; $i++) {\n" +
+          "  if (Raise-GameWindow) { Start-Sleep -Milliseconds 500; Raise-GameWindow | Out-Null; break }\n" +
+          "  Start-Sleep -Milliseconds 250\n" +
+          "}\n" +
+          "for ($i=0; $i -lt 15; $i++) { Raise-GameWindow | Out-Null; Start-Sleep -Milliseconds 400 }\n";
+        fs.mkdirSync(omskekranRoot, { recursive: true });
+        fs.writeFileSync(helperPath, helperBody, "utf8");
 
         const taskName = `StellaKioskGameOnce`;
-        const script = `
-$ErrorActionPreference = 'Stop'
-function Resolve-User {
-  $ErrorActionPreference = 'SilentlyContinue'
-  $proc = Get-CimInstance Win32_Process -Filter "Name = 'explorer.exe'" -ErrorAction SilentlyContinue | Select-Object -First 1
-  if ($proc) {
-    $o = Invoke-CimMethod -InputObject $proc -MethodName GetOwner -ErrorAction SilentlyContinue
-    if ($o -and $o.User) {
-      if ($o.Domain) { return "$($o.Domain)\\$($o.User)" }
-      return $o.User
-    }
-  }
-  Get-CimInstance Win32_Process | ForEach-Object {
-    if ($_.SessionId -gt 0 -and $_.Name -match '^(msedge|sihost|taskhostw|ApplicationFrameHost|ShellExperienceHost)\\.exe$') {
-      $o = Invoke-CimMethod -InputObject $_ -MethodName GetOwner -ErrorAction SilentlyContinue
-      if ($o -and $o.User -and $o.User -notin @('SYSTEM','LOCAL SERVICE','NETWORK SERVICE')) {
-        if ($o.Domain) { return "$($o.Domain)\\$($o.User)" }
-        return $o.User
-      }
-    }
-  }
-  $cached = '${cachedEsc}'
-  if ($cached) { return $cached }
-  return $null
-}
-
-$user = Resolve-User
-if (-not $user) { exit 2 }
-
-$exe = '${exeEsc}'
-$cwd = '${cwdEsc}'
-$task = '${taskName}'
-
-try { Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue | Out-Null } catch {}
-
-$action = New-ScheduledTaskAction -Execute $exe -WorkingDirectory $cwd
-$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances Parallel
-$principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Highest
-$trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddSeconds(2)
-
-Register-ScheduledTask -TaskName $task -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force | Out-Null
-Start-ScheduledTask -TaskName $task -ErrorAction Stop | Out-Null
-
-for ($i=0; $i -lt 200000; $i++) {
-  $info = Get-ScheduledTaskInfo -TaskName $task -ErrorAction SilentlyContinue
-  if (-not $info) { break }
-  if ($info.State -ne 'Running') { break }
-  Start-Sleep -Milliseconds 500
-}
-
-try { Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue | Out-Null } catch {}
-Write-Output 'ok'
-`;
+        const helperEsc = String(helperPath).replace(/'/g, "''");
+        const exeNameEsc = String(exeName).replace(/'/g, "''");
+        // Launch helper as interactive user (raise window in their session), wait for game process.
+        const script =
+          "$ErrorActionPreference = 'Stop'\n" +
+          "function Resolve-User {\n" +
+          "  $ErrorActionPreference = 'SilentlyContinue'\n" +
+          "  $cs = Get-CimInstance Win32_ComputerSystem\n" +
+          "  if ($cs -and $cs.UserName) { return $cs.UserName }\n" +
+          "  $proc = Get-CimInstance Win32_Process -Filter \"Name = 'explorer.exe'\" -ErrorAction SilentlyContinue | Select-Object -First 1\n" +
+          "  if ($proc) {\n" +
+          "    $o = Invoke-CimMethod -InputObject $proc -MethodName GetOwner -ErrorAction SilentlyContinue\n" +
+          "    if ($o -and $o.User) {\n" +
+          "      if ($o.Domain) { return \"$($o.Domain)\\$($o.User)\" }\n" +
+          "      return $o.User\n" +
+          "    }\n" +
+          "  }\n" +
+          "  Get-CimInstance Win32_Process | ForEach-Object {\n" +
+          "    if ($_.SessionId -gt 0 -and $_.Name -match '^(msedge|sihost|taskhostw|ApplicationFrameHost|ShellExperienceHost)\\.exe$') {\n" +
+          "      $o = Invoke-CimMethod -InputObject $_ -MethodName GetOwner -ErrorAction SilentlyContinue\n" +
+          "      if ($o -and $o.User -and $o.User -notin @('SYSTEM','LOCAL SERVICE','NETWORK SERVICE')) {\n" +
+          "        if ($o.Domain) { return \"$($o.Domain)\\$($o.User)\" }\n" +
+          "        return $o.User\n" +
+          "      }\n" +
+          "    }\n" +
+          "  }\n" +
+          "  $cached = '" +
+          cachedEsc +
+          "'\n" +
+          "  if ($cached) { return $cached }\n" +
+          "  return $null\n" +
+          "}\n" +
+          "$user = Resolve-User\n" +
+          "if (-not $user) { exit 2 }\n" +
+          "$helper = '" +
+          helperEsc +
+          "'\n" +
+          "$task = '" +
+          taskName +
+          "'\n" +
+          "$exeName = '" +
+          exeNameEsc +
+          "'\n" +
+          "try { Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue | Out-Null } catch {}\n" +
+          "$arg = '-NoLogo -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"' + $helper + '\"'\n" +
+          "$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $arg\n" +
+          "$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances Parallel -ExecutionTimeLimit (New-TimeSpan -Minutes 5) -Hidden\n" +
+          "$principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited\n" +
+          "Register-ScheduledTask -TaskName $task -Action $action -Settings $settings -Principal $principal -Force | Out-Null\n" +
+          "Start-ScheduledTask -TaskName $task -ErrorAction Stop | Out-Null\n" +
+          "$started = $false\n" +
+          "for ($i=0; $i -lt 90; $i++) {\n" +
+          "  if (Get-Process -Name $exeName -ErrorAction SilentlyContinue) { $started = $true; break }\n" +
+          "  Start-Sleep -Milliseconds 500\n" +
+          "}\n" +
+          "if (-not $started) {\n" +
+          "  $info = Get-ScheduledTaskInfo -TaskName $task -ErrorAction SilentlyContinue\n" +
+          "  $code = if ($info) { [int]$info.LastTaskResult } else { -1 }\n" +
+          "  try { Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue | Out-Null } catch {}\n" +
+          "  Write-Output (\"fail:\" + $code)\n" +
+          "  exit 4\n" +
+          "}\n" +
+          "while (Get-Process -Name $exeName -ErrorAction SilentlyContinue) { Start-Sleep -Seconds 1 }\n" +
+          "try { Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue | Out-Null } catch {}\n" +
+          "Write-Output 'ok'\n";
 
         await new Promise((resolve, reject) => {
           const ps = spawnPowerShell(["-Command", script]);
@@ -808,7 +853,6 @@ Write-Output 'ok'
           message: null,
           updatedAt: new Date().toISOString(),
         };
-        relaunchEdgeUi();
         gameLaunchInProgress = false;
         sendJson(res, 200, { ok: true });
       } catch (e) {
@@ -822,11 +866,6 @@ Write-Output 'ok'
           message: e instanceof Error ? e.message : String(e),
           updatedAt: new Date().toISOString(),
         };
-        try {
-          relaunchEdgeUi();
-        } catch {
-          /* ignore */
-        }
         sendJson(res, 500, { ok: false, error: e instanceof Error ? e.message : String(e) });
       }
     });
