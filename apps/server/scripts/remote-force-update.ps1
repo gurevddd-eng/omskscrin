@@ -25,14 +25,33 @@ $block = {
   $flag = Join-Path $root "FORCE_UPDATE"
   Set-Content -Path $flag -Value $Version.Trim() -Encoding Ascii -Force
   # Do NOT write LAUNCH_UI here: that races with OTA (Edge restart mid-copy).
-  # Agent writes LAUNCH_UI after update.zip is applied.
+  # Agent watches FORCE_UPDATE every ~1s — prefer live apply without bounce.
+
+  $healthPort = 47821
+  try {
+    $cfgPath = Join-Path $root "kiosk.json"
+    if (Test-Path $cfgPath) {
+      $cfg = Get-Content $cfgPath -Raw | ConvertFrom-Json
+      if ($cfg.healthPort) { $healthPort = [int]$cfg.healthPort }
+    }
+  } catch { }
+
+  $agentLive = $false
+  try {
+    $r = Invoke-WebRequest -Uri "http://127.0.0.1:$healthPort/health" -UseBasicParsing -TimeoutSec 2
+    if ($r.StatusCode -ge 200 -and $r.StatusCode -lt 300) { $agentLive = $true }
+  } catch { }
+
+  if ($agentLive) {
+    return "FORCE_UPDATE written ($Version); agent live — apply without restart"
+  }
+
+  # Agent down: quick restart (no multi-second sleeps)
   $null = & schtasks.exe /End /TN "StellaKioskAgent" 2>$null
-  Start-Sleep -Seconds 2
-  # Ensure node from a previous run is gone so ports free and backoff resets.
   Get-Process -Name node -ErrorAction SilentlyContinue | Where-Object {
     try { $_.Path -like "*StellaKiosk*" } catch { $false }
   } | Stop-Process -Force -ErrorAction SilentlyContinue
-  Start-Sleep -Seconds 1
+  Start-Sleep -Milliseconds 400
   $run = & schtasks.exe /Run /TN "StellaKioskAgent" 2>&1
   if ($LASTEXITCODE -ne 0) {
     return "FORCE_UPDATE written ($Version); agent restart failed: $run"

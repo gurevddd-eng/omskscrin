@@ -123,7 +123,8 @@ Copy-Item (Join-Path $out "MANIFEST.txt") $updStage -Force -ErrorAction Silently
 Copy-Item (Join-Path $out "ui") (Join-Path $updStage "ui") -Recurse -Force
 if (Test-Path (Join-Path $out "games")) {
   Copy-Item (Join-Path $out "games") (Join-Path $updStage "games") -Recurse -Force
-}Compress-Archive -Path (Join-Path $updStage "*") -DestinationPath $updOut -Force
+}
+Compress-Archive -Path (Join-Path $updStage "*") -DestinationPath $updOut -Force
 Remove-Item $updStage -Recurse -Force -ErrorAction SilentlyContinue
 
 # Full zip for first remote install (SMB), includes portable Node if present

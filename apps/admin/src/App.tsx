@@ -6,6 +6,7 @@ import { AdsPage } from "./pages/AdsPage";
 import { TimelineAdminPage } from "./pages/TimelineAdminPage";
 import { AppLayout } from "./components/layout/AppLayout";
 import { ExhibitsPage } from "./pages/ExhibitsPage";
+import { ExhibitPreviewPage } from "./pages/ExhibitPreviewPage";
 import { KiosksPage } from "./pages/KiosksPage";
 import { LoginPage } from "./pages/LoginPage";
 import { MonitoringPage } from "./pages/MonitoringPage";
@@ -19,6 +20,7 @@ export function App() {
         <BrowserRouter>
         <Routes>
           <Route path="/login" element={<LoginPage />} />
+          <Route path="/exhibits/:id/preview" element={<ExhibitPreviewPage />} />
           <Route element={<AppLayout />}>
             <Route index element={<DashboardPage />} />
             <Route path="monitor" element={<MonitoringPage />} />

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import type { SyncStatus } from "@stella/shared";
+import type { KioskManifest, SyncStatus } from "@stella/shared";
 import { normalizeHhMm, parseThemeMode, resolveEffectiveTheme } from "@stella/shared";
 import { loadConfig, type KioskConfig } from "./config";
 import {
@@ -101,15 +101,43 @@ function useClock() {
 function RailClock({
   syncStatus,
   statusText,
+  theme,
+  themeMode,
+  onToggleTheme,
 }: {
   syncStatus: SyncStatus;
   statusText: string;
+  theme: "light" | "dark";
+  themeMode: "manual" | "light" | "dark" | "schedule";
+  onToggleTheme: () => void;
 }) {
   const { time, date } = useClock();
+  const themeManual = themeMode === "manual";
   return (
     <div className="rail__meta">
-      <strong className="rail__time">{time}</strong>
-      <span className="rail__date">{date}</span>
+      <div className="rail__meta-top">
+        <div className="rail__meta-clock">
+          <strong className="rail__time">{time}</strong>
+          <span className="rail__date">{date}</span>
+        </div>
+        {themeManual ? (
+          <button
+            type="button"
+            className="rail__theme-toggle"
+            onClick={onToggleTheme}
+            aria-label={theme === "light" ? "Включить тёмную тему" : "Включить светлую тему"}
+            title={theme === "light" ? "Тёмная тема" : "Светлая тема"}
+          >
+            <span className="rail__theme-switch" data-theme={theme} aria-hidden>
+              <span className="rail__theme-knob" />
+            </span>
+          </button>
+        ) : (
+          <span className="rail__theme-chip" title="Тема задана с сервера">
+            {theme === "light" ? "светлая" : "тёмная"}
+          </span>
+        )}
+      </div>
       <span
         className={`rail__sync is-${syncStatus === "ok" ? "ok" : syncStatus === "error" ? "err" : "wait"}`}
         title={statusText}
@@ -121,32 +149,43 @@ function RailClock({
 }
 
 function StarLogo() {
+  // Faceted «Парк Победы» star — same animation hooks as before.
+  const C = "40,40";
+  const tips = [
+    "40,4",
+    "74.24,28.88",
+    "61.16,69.12",
+    "18.84,69.12",
+    "5.76,28.88",
+  ];
+  const inns = [
+    "48.35,28.51",
+    "53.51,44.39",
+    "40,54.2",
+    "26.49,44.39",
+    "31.65,28.51",
+  ];
+  const light = "#ff2e3a";
+  const mid = "#e30613";
+  const dark = "#9a0a14";
+  const deep = "#6b0610";
+
   return (
     <svg className="rail__star" viewBox="0 0 80 80" aria-hidden>
       <defs>
-        <linearGradient id="star-metal" x1="40" y1="4" x2="40" y2="76" gradientUnits="userSpaceOnUse">
-          <stop offset="0%" stopColor="#ffe9a8" />
-          <stop offset="45%" stopColor="#e0b33a" />
-          <stop offset="100%" stopColor="#9a7410" />
-        </linearGradient>
-        <linearGradient id="star-crimson" x1="22" y1="10" x2="58" y2="70" gradientUnits="userSpaceOnUse">
-          <stop offset="0%" stopColor="#ff5a5a" />
-          <stop offset="40%" stopColor="#e30613" />
-          <stop offset="100%" stopColor="#8f000c" />
-        </linearGradient>
-        <radialGradient id="star-core" cx="40" cy="38" r="14" gradientUnits="userSpaceOnUse">
-          <stop offset="0%" stopColor="#fff6c8" stopOpacity="0.95" />
-          <stop offset="55%" stopColor="#ffd36a" stopOpacity="0.55" />
-          <stop offset="100%" stopColor="#ffd36a" stopOpacity="0" />
+        <radialGradient id="star-core" cx="40" cy="40" r="16" gradientUnits="userSpaceOnUse">
+          <stop offset="0%" stopColor="#ff8a8a" stopOpacity="0.85" />
+          <stop offset="45%" stopColor="#ff2e3a" stopOpacity="0.35" />
+          <stop offset="100%" stopColor="#ff2e3a" stopOpacity="0" />
         </radialGradient>
       </defs>
 
       <g className="rail__star-rays" aria-hidden>
         <path
-          d="M40 6v10M40 64v10M6 40h10M64 40h10M16.5 16.5l7 7M56.5 56.5l7 7M63.5 16.5l-7 7M23.5 56.5l-7 7"
+          d="M40 1.5v5M40 73.5v5M1.5 40h5M73.5 40h5M14.2 14.2l3.6 3.6M62.2 62.2l3.6 3.6M65.8 14.2l-3.6 3.6M17.8 62.2l-3.6 3.6"
           fill="none"
           stroke="currentColor"
-          strokeWidth="2.2"
+          strokeWidth="1.6"
           strokeLinecap="round"
         />
       </g>
@@ -154,19 +193,36 @@ function StarLogo() {
       <g className="rail__star-body">
         <path
           className="rail__star-rim"
-          fill="url(#star-metal)"
-          d="M40 5l9.2 22.4H74L53.6 41.2l6.8 23.2L40 50.2 19.6 64.4l6.8-23.2L6 27.4h24.8L40 5z"
+          fill={deep}
+          d={`M${tips[0]} L${inns[0]} L${tips[1]} L${inns[1]} L${tips[2]} L${inns[2]} L${tips[3]} L${inns[3]} L${tips[4]} L${inns[4]} Z`}
         />
-        <path
-          className="rail__star-face"
-          fill="url(#star-crimson)"
-          d="M40 12.5l7.1 17.4H67l-16.1 11.7 5.8 19.5L40 48.8 23.3 61.1l5.8-19.5L13 29.9h19.9L40 12.5z"
-        />
+
+        {/* Left (shaded) / right (lit) facets of each point */}
+        <polygon fill={dark} points={`${C} ${tips[0]} ${inns[4]}`} />
+        <polygon fill={light} points={`${C} ${tips[0]} ${inns[0]}`} />
+        <polygon fill={dark} points={`${C} ${tips[1]} ${inns[0]}`} />
+        <polygon fill={mid} points={`${C} ${tips[1]} ${inns[1]}`} />
+        <polygon fill={dark} points={`${C} ${tips[2]} ${inns[1]}`} />
+        <polygon fill={light} points={`${C} ${tips[2]} ${inns[2]}`} />
+        <polygon fill={dark} points={`${C} ${tips[3]} ${inns[2]}`} />
+        <polygon fill={mid} points={`${C} ${tips[3]} ${inns[3]}`} />
+        <polygon fill={dark} points={`${C} ${tips[4]} ${inns[3]}`} />
+        <polygon fill={light} points={`${C} ${tips[4]} ${inns[4]}`} />
+
+        {/* Ridge lines — crystalline fold like the park logo */}
+        <g fill="none" stroke="rgba(40,0,6,0.35)" strokeWidth="0.55" strokeLinejoin="round">
+          <path d={`M${C} L${tips[0]} M${C} L${tips[1]} M${C} L${tips[2]} M${C} L${tips[3]} M${C} L${tips[4]}`} />
+          <path d={`M${C} L${inns[0]} M${C} L${inns[1]} M${C} L${inns[2]} M${C} L${inns[3]} M${C} L${inns[4]}`} />
+          <path
+            d={`M${tips[0]} L${inns[0]} L${tips[1]} L${inns[1]} L${tips[2]} L${inns[2]} L${tips[3]} L${inns[3]} L${tips[4]} L${inns[4]} Z`}
+          />
+        </g>
+
         <path
           className="rail__star-sheen"
-          d="M40 15.2l3.4 9.8h.2L52 25.2l-7.4 5.4.8 2.8L40 29.6V15.2z"
+          d={`M${tips[0]} L${inns[0]} L${C} L${inns[4]} Z`}
         />
-        <circle className="rail__star-core" cx="40" cy="38" r="14" fill="url(#star-core)" />
+        <circle className="rail__star-core" cx="40" cy="40" r="14" fill="url(#star-core)" />
       </g>
     </svg>
   );
@@ -183,9 +239,40 @@ function EmptyBlock({ title, text }: { title: string; text: string }) {
   );
 }
 
-export function App() {
+function KioskFooter({ softwareVersion }: { softwareVersion: string | null }) {
+  return (
+    <footer className="kiosk-bar" aria-label="Об организации">
+      <div className="kiosk-bar__org">
+        <span className="kiosk-bar__label">Учреждение</span>
+        <p className="kiosk-bar__text">
+          Бюджетное учреждение города Омска «Управление дорожного хозяйства и благоустройства»
+        </p>
+      </div>
+      <div className="kiosk-bar__org kiosk-bar__org--dev">
+        <span className="kiosk-bar__label">Разработка</span>
+        <p className="kiosk-bar__text">
+          Управление информационного обеспечения, видеонаблюдения и сопровождения навигационных
+          систем
+        </p>
+      </div>
+      <div className="kiosk-bar__ver" title="Версия ПО киоска (OTA)">
+        <span className="kiosk-bar__label">ПО (OTA)</span>
+        <strong className="kiosk-bar__version">{softwareVersion || "—"}</strong>
+      </div>
+    </footer>
+  );
+}
+
+export type KioskPreview = {
+  manifest: KioskManifest;
+  /** Same-origin CMS base, empty string when admin and API share host */
+  serverUrl: string;
+};
+
+export function App({ preview }: { preview?: KioskPreview } = {}) {
   const [config, setConfig] = useState<KioskConfig | null>(null);
   const [state, setState] = useState<CachedState | null>(null);
+  const [softwareVersion, setSoftwareVersion] = useState<string | null>(() => getKnownSoftwareVersion());
   const [tab, setTab] = useState<Tab>("home");
   const [galleryIdx, setGalleryIdx] = useState(0);
   const [timelinePageId, setTimelinePageId] = useState<string | null>(null);
@@ -278,6 +365,7 @@ export function App() {
   const [nativeShell, setNativeShell] = useState(false);
   const [gameBusy, setGameBusy] = useState(false);
   const [gameError, setGameError] = useState<string | null>(null);
+  const previewMode = Boolean(preview);
 
   const bumpActivity = useCallback(() => {
     (window as unknown as { __lastActive?: number }).__lastActive = Date.now();
@@ -305,28 +393,101 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    if (preview) {
+      setConfig({
+        kioskId: "preview",
+        hostname: "preview",
+        serverUrl: preview.serverUrl,
+        syncIntervalSec: 60,
+        idleTimeoutSec: 600,
+        heartbeatIntervalSec: 30,
+        healthPort: 47821,
+        appVersion: "preview",
+        game: null,
+      });
+      setState({
+        manifest: preview.manifest,
+        fileBlobs: {},
+        syncedAt: new Date().toISOString(),
+        syncFingerprint: fingerprintOf(preview.manifest),
+        complete: true,
+      });
+      setSyncStatus("ok");
+      setSyncMessage("превью");
+      setNativeShell(false);
+      applyServerTheme(preview.manifest);
+      return;
+    }
     void loadConfig().then((cfg) => setConfig(cfg));
     setNativeShell(isTauriShell());
     void probeNativeShell().then(setNativeShell);
-  }, []);
+  }, [preview, applyServerTheme]);
+
+  // Fast OTA soft-reload: agent updates files without killing Edge; poll health every 3s
+  useEffect(() => {
+    if (!config || previewMode) return;
+    let stopped = false;
+    let known: string | null = getKnownSoftwareVersion();
+    const tick = async () => {
+      try {
+        const hr = await fetch(`http://127.0.0.1:${config.healthPort}/health`, {
+          cache: "no-store",
+        });
+        if (!hr.ok || stopped) return;
+        const health = (await hr.json()) as { softwareVersion?: string };
+        const agentSw = String(health.softwareVersion || "").trim();
+        if (!agentSw) return;
+        if (known === null) {
+          known = agentSw;
+          setKnownSoftwareVersion(agentSw);
+          setSoftwareVersion(agentSw);
+          return;
+        }
+        if (agentSw !== known) {
+          known = agentSw;
+          setKnownSoftwareVersion(agentSw);
+          setSoftwareVersion(agentSw);
+          window.location.reload();
+        }
+      } catch {
+        /* agent restarting */
+      }
+    };
+    void tick();
+    const id = window.setInterval(() => void tick(), 3_000);
+    return () => {
+      stopped = true;
+      window.clearInterval(id);
+    };
+  }, [config, previewMode]);
 
   const startGame = useCallback(async () => {
-    if (!config?.game?.exe || gameBusy) return;
+    if (previewMode || gameBusy) return;
+    const game = state?.manifest.exhibit?.game;
+    if (!game?.exe || !game.shareFolder) return;
     setGameError(null);
     setGameBusy(true);
     bumpActivity();
     try {
-      await launchExe(config.game.exe, config.game.args || [], config.game.cwd);
+      const res = await fetch(`http://127.0.0.1:${config?.healthPort || 47821}/launch-game`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ folder: game.shareFolder, exe: game.exe }),
+      });
+      const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+      if (!res.ok || body.ok === false) {
+        throw new Error(body.error || "Не удалось запустить игру");
+      }
     } catch (e) {
       setGameError(e instanceof Error ? e.message : "Не удалось запустить игру");
     } finally {
       setGameBusy(false);
       bumpActivity();
     }
-  }, [config, gameBusy, bumpActivity]);
+  }, [previewMode, gameBusy, bumpActivity, state, config]);
 
   useEffect(() => {
-    if (!config) return;
+    if (!config || previewMode) return;
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
     let lastSyncStatus: SyncStatus = "unknown";
@@ -353,6 +514,7 @@ export function App() {
         if (sessionAgentSoftware === null) {
           sessionAgentSoftware = agentSw;
           setKnownSoftwareVersion(agentSw);
+          setSoftwareVersion(agentSw);
           return;
         }
 
@@ -361,6 +523,7 @@ export function App() {
           reloadArmed = true;
           sessionAgentSoftware = agentSw;
           setKnownSoftwareVersion(agentSw);
+          setSoftwareVersion(agentSw);
           window.location.reload();
         }
       } catch {
@@ -627,7 +790,7 @@ export function App() {
         /* ignore */
       }
     };
-  }, [config, applyServerTheme]);
+  }, [config, applyServerTheme, previewMode]);
 
   useEffect(() => {
     bumpActivity();
@@ -656,18 +819,20 @@ export function App() {
   }, [config, bumpActivity]);
 
   const serverUrl = config?.serverUrl;
+  const agentMedia = previewMode ? null : { port: config?.healthPort || 47821 };
+  const fileUrl = (id: string | null | undefined) => mediaUrl(state, id, serverUrl, agentMedia);
   const exhibit = state?.manifest.exhibit;
   const galleryIds = exhibit?.galleryIds || [];
   const adIds = state?.manifest.adIds || [];
   const adsVersion = state?.manifest.adsVersion || "0";
   const specs = exhibit?.specs?.filter((r) => r.label || r.value) || [];
-  const hero = mediaUrl(state, exhibit?.heroImageId, serverUrl);
-  const video = mediaUrl(state, exhibit?.videoId, serverUrl);
-  const audio = mediaUrl(state, exhibit?.audioId, serverUrl);
-  const gallerySrc = mediaUrl(state, galleryIds[galleryIdx], serverUrl);
-  const asideThumb = galleryIds[0] ? mediaUrl(state, galleryIds[0], serverUrl) : hero;
+  const hero = fileUrl(exhibit?.heroImageId);
+  const video = fileUrl(exhibit?.videoId);
+  const audio = fileUrl(exhibit?.audioId);
+  const gallerySrc = fileUrl(galleryIds[galleryIdx]);
+  const asideThumb = galleryIds[0] ? fileUrl(galleryIds[0]) : hero;
   const hasAds = adIds.length > 0;
-  const adSrc = mediaUrl(state, adIds[adIdx % Math.max(adIds.length, 1)], serverUrl);
+  const adSrc = fileUrl(adIds[adIdx % Math.max(adIds.length, 1)]);
   const galleryCount = galleryIds.length;
   const timelinePages = state?.manifest.timelinePages ?? [];
   const activeTimeline =
@@ -802,16 +967,31 @@ export function App() {
 
   useEffect(() => {
     if (!state) return;
-    // Prefetch only what the user is likely to open next — not every timeline page.
-    const timelineActive = state.manifest.timelinePages?.find((p) => p.id === timelinePageId);
+    if (previewMode) return;
+    // Warm the agent disk cache for image assets referenced by the manifest.
+    // (We intentionally do it once per manifest fingerprint.)
+    if (!agentMedia?.port) return;
+
+    const fp = state.syncFingerprint;
+    if (!fp) return;
+    const fpKey = "stella_kiosk_prefetch_fp";
+    if (localStorage.getItem(fpKey) === fp) return;
+
+    const timelineImageIds = (state.manifest.timelinePages || []).flatMap((p) => p.imageIds || []);
     const ids = [
       exhibit?.heroImageId,
-      ...(exhibit?.galleryIds || []).slice(0, 4),
-      ...(state.manifest.adIds || []).slice(0, 2),
-      ...(timelineActive?.imageIds || []).slice(0, 3),
-    ];
-    prefetchImages(ids.map((id) => mediaUrl(state, id, serverUrl)));
-  }, [state, exhibit?.heroImageId, exhibit?.galleryIds, serverUrl, timelinePageId]);
+      ...(exhibit?.galleryIds || []),
+      ...(state.manifest.adIds || []),
+      ...timelineImageIds,
+    ].filter(Boolean) as string[];
+
+    // Safety cap to avoid an accidental flood of HTTP requests.
+    const PREFETCH_MAX = 120;
+    const unique = Array.from(new Set(ids)).slice(0, PREFETCH_MAX);
+
+    prefetchImages(unique.map((id) => fileUrl(id)));
+    localStorage.setItem(fpKey, fp);
+  }, [state, exhibit?.heroImageId, exhibit?.galleryIds, serverUrl, timelinePageId, previewMode, agentMedia?.port]);
 
   useEffect(() => {
     if (adIds.length < 2) return;
@@ -920,26 +1100,13 @@ export function App() {
       </nav>
 
       <div className="rail__foot">
-        {themeMode === "manual" ? (
-          <button
-            type="button"
-            className="rail__theme"
-            onClick={toggleTheme}
-            aria-label={theme === "light" ? "Включить тёмную тему" : "Включить светлую тему"}
-          >
-            <span className="rail__theme-label">Тема</span>
-            <span className="rail__theme-value">{theme === "light" ? "Светлая" : "Тёмная"}</span>
-            <span className="rail__theme-switch" data-theme={theme} aria-hidden>
-              <span className="rail__theme-knob" />
-            </span>
-          </button>
-        ) : (
-          <div className="rail__theme rail__theme--locked" aria-label="Тема задана с сервера">
-            <span className="rail__theme-label">Тема</span>
-            <span className="rail__theme-value">{theme === "light" ? "Светлая" : "Тёмная"}</span>
-          </div>
-        )}
-        <RailClock syncStatus={syncStatus} statusText={statusText} />
+        <RailClock
+          syncStatus={syncStatus}
+          statusText={statusText}
+          theme={theme}
+          themeMode={themeMode}
+          onToggleTheme={toggleTheme}
+        />
       </div>
     </aside>
   );
@@ -999,96 +1166,100 @@ export function App() {
     </aside>
   ) : null;
 
+  const frameTheme = theme === "dark" ? "theme-dark" : "theme-light";
+
   if (!exhibit && tab !== "timeline") {
     return (
-      <div
-        className={`shell shell--empty ${theme === "dark" ? "theme-dark" : "theme-light"}`}
-        onPointerDown={bumpActivity}
-      >
-        {rail}
-        <main className="stage">
-          <section className="panel panel--empty">
-            <EmptyBlock
-              title="Контент недоступен"
-              text="Экспонат не привязан к киоску или ещё не синхронизирован с сервером."
-            />
-            <p className="panel__hint">{statusText}</p>
-          </section>
-        </main>
+      <div className={`kiosk-frame ${frameTheme}`} onPointerDown={bumpActivity}>
+        <div className="shell shell--empty">
+          {rail}
+          <main className="stage">
+            <section className="panel panel--empty">
+              <EmptyBlock
+                title="Контент недоступен"
+                text="Экспонат не привязан к киоску или ещё не синхронизирован с сервером."
+              />
+              <p className="panel__hint">{statusText}</p>
+            </section>
+          </main>
+        </div>
+        <KioskFooter softwareVersion={softwareVersion} />
       </div>
     );
   }
 
   return (
-    <div
-      className={`shell shell--${tab} ${hasAds ? "shell--with-ads" : ""} ${theme === "dark" ? "theme-dark" : "theme-light"}`}
-      onPointerDown={bumpActivity}
-    >
-      {rail}
+    <div className={`kiosk-frame ${frameTheme}`} onPointerDown={bumpActivity}>
+      <div className={`shell shell--${tab} ${hasAds ? "shell--with-ads" : ""}`}>
+        {rail}
 
-      <main className="stage">
-        {tab === "timeline" && (
-          <section
-            className="panel panel--timeline"
-            key={`timeline-${activeTimeline?.id || "x"}-${screenKey}`}
-            onPointerDown={onTimelinePointerDown}
-            onPointerMove={onTimelinePointerMove}
-            onPointerUp={endTimelineSwipe}
-            onPointerCancel={endTimelineSwipe}
-          >
-            {activeTimeline?.imageIds?.length ? (
-              <div className="timeline-stack">
-                {activeTimeline.imageIds.map((id) => {
-                  const src = mediaUrl(state, id, serverUrl);
-                  return src ? (
-                    <ReadyImage key={id} className="timeline-stack__img" src={src} alt="" />
-                  ) : null;
-                })}
-              </div>
-            ) : (
-              <EmptyBlock
-                title={activeTimeline?.label || "Хроника"}
-                text="Для этой страницы ещё не загружены изображения. Настройте раздел «Хроника» в админке."
-              />
-            )}
-          </section>
-        )}
-
-        {exhibit && tab === "home" && (
-          <section className="panel panel--home" key={`home-${screenKey}`}>
-            <div className="home-hero" aria-hidden={!hero}>
-              {hero ? (
-                <ReadyImage className="home-hero__img" src={hero} alt="" />
+        <main className="stage">
+          {tab === "timeline" && (
+            <section
+              className="panel panel--timeline"
+              key={`timeline-${activeTimeline?.id || "x"}-${screenKey}`}
+              onPointerDown={onTimelinePointerDown}
+              onPointerMove={onTimelinePointerMove}
+              onPointerUp={endTimelineSwipe}
+              onPointerCancel={endTimelineSwipe}
+            >
+              {activeTimeline?.imageIds?.length ? (
+                <div className="timeline-stack">
+                  {activeTimeline.imageIds.map((id) => {
+                    const src = fileUrl(id);
+                    return src ? (
+                      <ReadyImage key={id} className="timeline-stack__img" src={src} alt="" />
+                    ) : null;
+                  })}
+                </div>
               ) : (
-                <div className="home-hero__empty" />
+                <EmptyBlock
+                  title={activeTimeline?.label || "Хроника"}
+                  text="Для этой страницы ещё не загружены изображения. Настройте раздел «Хроника» в админке."
+                />
               )}
-              <div className="home-hero__veil" />
-            </div>
-            <div className="home-copy">
-              <p className="home-copy__brand">Парк Победы</p>
-              <h1 className="home-copy__title">{exhibit.title}</h1>
-              {exhibit.summary ? <p className="home-copy__lead">{exhibit.summary}</p> : null}
-              <div className="home-copy__actions">
-                <button type="button" className="btn-red btn-red--home" onClick={() => goTab("about")}>
-                  Описание и характеристики
-                </button>
-                {nativeShell && config?.game?.exe ? (
-                  <button
-                    type="button"
-                    className="btn-ghost btn-ghost--home"
-                    disabled={gameBusy}
-                    onClick={() => void startGame()}
-                  >
-                    {gameBusy ? "Игра запущена…" : config.game.title || "Играть"}
-                  </button>
-                ) : null}
-              </div>
-              {gameError ? <p className="home-copy__error">{gameError}</p> : null}
-            </div>
-          </section>
-        )}
+            </section>
+          )}
 
-        {exhibit && tab === "about" && (
+          {exhibit && tab === "home" && (
+            <section className="panel panel--home" key={`home-${screenKey}`}>
+              <div className="home-hero" aria-hidden={!hero}>
+                {hero ? (
+                  <ReadyImage className="home-hero__img" src={hero} alt="" />
+                ) : (
+                  <div className="home-hero__empty" />
+                )}
+                <div className="home-hero__veil" />
+              </div>
+              <div className="home-copy">
+                <p className="home-copy__brand">Парк Победы</p>
+                <h1 className="home-copy__title">{exhibit.title}</h1>
+                {exhibit.summary ? <p className="home-copy__lead">{exhibit.summary}</p> : null}
+                <div className="home-copy__actions">
+                  <button type="button" className="btn-red btn-red--home" onClick={() => goTab("about")}>
+                    Описание и характеристики
+                  </button>
+                  {exhibit?.game && !previewMode ? (
+                    <button
+                      type="button"
+                      className="btn-ghost btn-ghost--home"
+                      disabled={gameBusy}
+                      onClick={() => void startGame()}
+                    >
+                      {gameBusy ? "Игра запущена…" : exhibit.game.title || "Играть"}
+                    </button>
+                  ) : exhibit?.game && previewMode ? (
+                    <button type="button" className="btn-ghost btn-ghost--home" disabled>
+                      {exhibit.game.title || "Играть"}
+                    </button>
+                  ) : null}
+                </div>
+                {gameError ? <p className="home-copy__error">{gameError}</p> : null}
+              </div>
+            </section>
+          )}
+
+          {exhibit && tab === "about" && (
           <section className="panel panel--about" key={`about-${screenKey}`}>
             <header className="about-head">
               <p className="panel__kicker">Описание</p>
@@ -1215,7 +1386,7 @@ export function App() {
             {galleryIds.length > 0 && (
               <div className="gallery-strip" role="list">
                 {galleryIds.map((id, i) => {
-                  const src = mediaUrl(state, id, serverUrl);
+                  const src = fileUrl(id);
                   return (
                     <button
                       key={id}
@@ -1259,6 +1430,8 @@ export function App() {
       </main>
 
       {wing}
+      </div>
+      <KioskFooter softwareVersion={softwareVersion} />
     </div>
   );
 }

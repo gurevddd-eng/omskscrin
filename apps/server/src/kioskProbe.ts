@@ -1,8 +1,10 @@
 import dns from "node:dns/promises";
 import { prisma } from "./prisma.js";
 import { config } from "./config.js";
+import { getDeployMeta } from "./deployMeta.js";
 import { broadcastKioskUpsert } from "./monitorHub.js";
 import { getProbeIntervalMs, getProbeTimeoutMs } from "./networkSettings.js";
+import { getSoftwareUpdatePending } from "./softwareUpdatePending.js";
 import type { InstallStatus, ProbeStatus, SyncStatus } from "@prisma/client";
 
 function isOnline(lastSeenAt: Date | null) {
@@ -33,7 +35,20 @@ export function mapKiosk(k: {
   installMessage: string | null;
   lastInstallAt: Date | null;
   exhibit?: { title: string } | null;
-}) {
+}, ota?: { target: string | null }) {
+  const metaTarget =
+    ota?.target !== undefined
+      ? ota.target
+      : (() => {
+          const sw = getDeployMeta().softwareVersion;
+          return sw && sw !== "0" ? sw : null;
+        })();
+  const pending =
+    getSoftwareUpdatePending(k.kioskId) || getSoftwareUpdatePending(k.hostname);
+  const local = k.softwareVersion ?? null;
+  const otaPending = Boolean(
+    pending && metaTarget && pending.target === metaTarget && local !== metaTarget
+  );
   return {
     id: k.id,
     kioskId: k.kioskId,
@@ -50,7 +65,9 @@ export function mapKiosk(k: {
     syncStatus: k.syncStatus,
     syncMessage: k.syncMessage,
     appVersion: k.appVersion,
-    softwareVersion: k.softwareVersion ?? null,
+    softwareVersion: local,
+    otaTarget: metaTarget,
+    otaPending,
     probeStatus: k.probeStatus,
     probeMessage: k.probeMessage,
     lastProbeAt: k.lastProbeAt?.toISOString() ?? null,
@@ -84,7 +101,9 @@ export async function loadKioskSnapshot() {
     include: { exhibit: { select: { title: true } } },
     orderBy: { name: "asc" },
   });
-  return list.map(mapKiosk);
+  const sw = getDeployMeta().softwareVersion;
+  const otaTarget = sw && sw !== "0" ? sw : null;
+  return list.map((k) => mapKiosk(k, { target: otaTarget }));
 }
 
 type HealthPayload = {

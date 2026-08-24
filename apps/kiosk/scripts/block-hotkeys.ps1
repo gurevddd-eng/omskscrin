@@ -1,7 +1,8 @@
-# Stella Kiosk - block ALL keyboard input via WH_KEYBOARD_LL + disable Task Manager.
+# Stella Kiosk - block keyboard input via WH_KEYBOARD_LL (touch-only kiosk).
 # Must run in the interactive user session (not Session 0).
-# Ctrl+Alt+Del cannot be swallowed by hooks (Secure Attention Sequence);
-# DisableTaskMgr removes Task Manager from that screen and blocks Ctrl+Shift+Esc path.
+# Ctrl+Alt+Del cannot be swallowed by hooks (Secure Attention Sequence).
+# Service access: Ctrl+Shift+Esc (Task Manager), Win+R (Run), Win+E (File Explorer).
+# Typing allowed in File Explorer / Run / TaskMgr / other service apps — not on desktop/taskbar.
 # Stops when ProgramData\StellaKiosk\STOPPED exists or BLOCK_KEYBOARD is 0/false/off.
 $ErrorActionPreference = "Stop"
 
@@ -20,17 +21,14 @@ function Should-Run {
   return $true
 }
 
-function Set-TaskMgrPolicy([bool]$Disable) {
+function Clear-TaskMgrPolicy {
   $paths = @(
     "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System",
     "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"
   )
   foreach ($p in $paths) {
     try {
-      if (-not (Test-Path $p)) { New-Item -Path $p -Force | Out-Null }
-      if ($Disable) {
-        New-ItemProperty -Path $p -Name "DisableTaskMgr" -Value 1 -PropertyType DWord -Force | Out-Null
-      } else {
+      if (Test-Path $p) {
         Remove-ItemProperty -Path $p -Name "DisableTaskMgr" -ErrorAction SilentlyContinue
       }
     } catch {}
@@ -38,12 +36,12 @@ function Set-TaskMgrPolicy([bool]$Disable) {
 }
 
 if (-not (Should-Run)) {
-  Set-TaskMgrPolicy $false
+  Clear-TaskMgrPolicy
   Write-Output "keyblock skipped"
   exit 0
 }
 
-Set-TaskMgrPolicy $true
+Clear-TaskMgrPolicy
 
 Add-Type -TypeDefinition @"
 using System;
@@ -60,9 +58,24 @@ public static class StellaHotkeyBlock {
   private const int WM_SYSKEYUP = 0x0105;
   private const uint WM_QUIT = 0x0012;
 
+  private const uint VK_SHIFT = 0x10;
+  private const uint VK_CONTROL = 0x11;
+  private const uint VK_ESCAPE = 0x1B;
+  private const uint VK_LWIN = 0x5B;
+  private const uint VK_RWIN = 0x5C;
+  private const uint VK_E = 0x45;
+  private const uint VK_R = 0x52;
+  private const uint VK_LSHIFT = 0xA0;
+  private const uint VK_RSHIFT = 0xA1;
+  private const uint VK_LCONTROL = 0xA2;
+  private const uint VK_RCONTROL = 0xA3;
+
   private static IntPtr _hook = IntPtr.Zero;
   private static LowLevelKeyboardProc _proc = HookCallback;
   private static uint _threadId;
+  private static bool _ctrlDown;
+  private static bool _shiftDown;
+  private static bool _winDown;
 
   private delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
 
@@ -113,6 +126,12 @@ public static class StellaHotkeyBlock {
   [DllImport("kernel32.dll")]
   private static extern uint GetCurrentThreadId();
 
+  [DllImport("user32.dll")]
+  private static extern IntPtr GetForegroundWindow();
+
+  [DllImport("user32.dll")]
+  private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+
   private static bool KeepRunning(string stopFlag, string blockFlag) {
     try {
       if (File.Exists(stopFlag)) return false;
@@ -123,12 +142,63 @@ public static class StellaHotkeyBlock {
     return true;
   }
 
-  // Swallow every key — kiosk is touch-only while BLOCK_KEYBOARD is on.
-  // Note: Ctrl+Alt+Del is handled by winlogon before this hook and cannot be eaten.
+  private static bool IsCtrlShift(uint vk) {
+    return vk == VK_CONTROL || vk == VK_LCONTROL || vk == VK_RCONTROL
+        || vk == VK_SHIFT || vk == VK_LSHIFT || vk == VK_RSHIFT;
+  }
+
+  private static bool IsWin(uint vk) {
+    return vk == VK_LWIN || vk == VK_RWIN;
+  }
+
+  private static void UpdateModifiers(uint vk, bool down) {
+    if (vk == VK_CONTROL || vk == VK_LCONTROL || vk == VK_RCONTROL) _ctrlDown = down;
+    if (vk == VK_SHIFT || vk == VK_LSHIFT || vk == VK_RSHIFT) _shiftDown = down;
+    if (vk == VK_LWIN || vk == VK_RWIN) _winDown = down;
+  }
+
+  // Allow keyboard outside Stella Edge (full Explorer / Run / TaskMgr / tools).
+  private static bool ForegroundAllowsKeyboard() {
+    try {
+      IntPtr hwnd = GetForegroundWindow();
+      if (hwnd == IntPtr.Zero) return false;
+      uint pid;
+      GetWindowThreadProcessId(hwnd, out pid);
+      if (pid == 0) return false;
+      using (Process p = Process.GetProcessById((int)pid)) {
+        string name = (p.ProcessName || "").ToLowerInvariant();
+        if (name == "msedge" || name == "msedgewebview2" || name == "chrome") return false;
+        return true;
+      }
+    } catch {
+      return false;
+    }
+  }
+
   private static IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam) {
     if (nCode >= 0) {
       int msg = wParam.ToInt32();
       if (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN || msg == WM_KEYUP || msg == WM_SYSKEYUP) {
+        KBDLLHOOKSTRUCT info = (KBDLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(KBDLLHOOKSTRUCT));
+        bool down = (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN);
+        UpdateModifiers(info.vkCode, down);
+
+        if (ForegroundAllowsKeyboard()) {
+          return CallNextHookEx(_hook, nCode, wParam, lParam);
+        }
+
+        if (IsCtrlShift(info.vkCode) || IsWin(info.vkCode)) {
+          return CallNextHookEx(_hook, nCode, wParam, lParam);
+        }
+        if (info.vkCode == VK_ESCAPE && _ctrlDown && _shiftDown) {
+          return CallNextHookEx(_hook, nCode, wParam, lParam);
+        }
+        if (info.vkCode == VK_R && _winDown) {
+          return CallNextHookEx(_hook, nCode, wParam, lParam);
+        }
+        if (info.vkCode == VK_E && _winDown) {
+          return CallNextHookEx(_hook, nCode, wParam, lParam);
+        }
         return (IntPtr)1;
       }
     }
@@ -166,10 +236,10 @@ public static class StellaHotkeyBlock {
 }
 "@ -Language CSharp
 
-Write-Output "keyblock starting (all keys)"
+Write-Output "keyblock starting (allow Ctrl+Shift+Esc, Win+R, Win+E)"
 try {
   [StellaHotkeyBlock]::Run($stopFlag, $blockFlag)
 } finally {
-  Set-TaskMgrPolicy $false
+  Clear-TaskMgrPolicy
   Write-Output "keyblock stopped"
 }

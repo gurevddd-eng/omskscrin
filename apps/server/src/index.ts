@@ -9,6 +9,7 @@ import { registerAuthRoutes } from "./routes/auth.js";
 import { registerExhibitRoutes } from "./routes/exhibits.js";
 import { registerFileRoutes } from "./routes/files.js";
 import { registerKioskRoutes } from "./routes/kiosks.js";
+import { registerPreviewRoutes } from "./routes/preview.js";
 import { registerAdsRoutes } from "./routes/ads.js";
 import { registerSettingsRoutes } from "./routes/settings.js";
 import { registerTimelineRoutes } from "./routes/timeline.js";
@@ -60,6 +61,7 @@ async function main() {
   await registerTimelineRoutes(app);
   await registerSettingsRoutes(app);
   await registerKioskRoutes(app);
+  await registerPreviewRoutes(app);
 
   if (config.serveAdmin) {
     await app.register(fastifyStatic, {

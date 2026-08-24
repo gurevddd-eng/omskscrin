@@ -9,6 +9,8 @@ import os from "node:os";
 import { spawn, execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
+import { PassThrough, Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 
 process.on("uncaughtException", (err) => {
   console.error("[stella-agent] uncaughtException:", err);
@@ -20,6 +22,15 @@ process.on("unhandledRejection", (err) => {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = __dirname;
 
+/** PowerShell Set-Content -Encoding UTF8 writes a BOM that breaks JSON.parse. */
+function stripBom(s) {
+  return s.charCodeAt(0) === 0xfeff ? s.slice(1) : s;
+}
+
+function readJsonFile(file) {
+  return JSON.parse(stripBom(fs.readFileSync(file, "utf8")));
+}
+
 function loadJsonConfig() {
   const candidates = [
     process.env.STELLA_KIOSK_CONFIG,
@@ -30,7 +41,7 @@ function loadJsonConfig() {
   for (const file of candidates) {
     try {
       if (file && fs.existsSync(file)) {
-        return JSON.parse(fs.readFileSync(file, "utf8"));
+        return readJsonFile(file);
       }
     } catch {
       /* next */
@@ -43,7 +54,7 @@ function readLocalSoftwareVersion() {
   const jsonPath = path.join(root, "version.json");
   if (fs.existsSync(jsonPath)) {
     try {
-      const j = JSON.parse(fs.readFileSync(jsonPath, "utf8"));
+      const j = readJsonFile(jsonPath);
       if (j?.softwareVersion) return String(j.softwareVersion);
     } catch {
       /* fall through */
@@ -74,6 +85,12 @@ let softwareVersion = readLocalSoftwareVersion();
 let updateInProgress = false;
 let updateFailCount = 0;
 let nextUpdateAllowedAt = 0;
+let gameLaunchInProgress = false;
+const omskekranRoot = path.join(process.env.ProgramData || "C:\\ProgramData", "omskekran");
+const contentRoot = path.join(omskekranRoot, "content");
+const gamesRoot = path.join(omskekranRoot, "games");
+// Central CMS base used for proxying media to the kiosk UI.
+const cmsBaseUrl = String(fileCfg.serverUrl || "").trim().replace(/\/$/, "");
 const forceUpdatePath = path.join(
   process.env.ProgramData || "C:\\ProgramData",
   "StellaKiosk",
@@ -181,7 +198,7 @@ function serveStatic(req, res) {
   });
 }
 
-const healthServer = http.createServer((req, res) => {
+const healthServer = http.createServer(async (req, res) => {
   const url = new URL(req.url || "/", `http://127.0.0.1:${healthPort}`);
 
   if (req.method === "OPTIONS") {
@@ -208,6 +225,288 @@ const healthServer = http.createServer((req, res) => {
       updatedAt: live.updatedAt,
       uiPort,
       agent: "stella-kiosk-agent",
+    });
+    return;
+  }
+
+  // Serve media to kiosk UI.
+  // MVP: proxy to CMS, with simple on-disk cache at C:\\ProgramData\\omskekran\\content.
+  if (req.method === "GET" && url.pathname.startsWith("/media/")) {
+    const id = decodeURIComponent(url.pathname.slice("/media/".length));
+    if (!cmsBaseUrl) {
+      sendJson(res, 404, { error: "CMS base URL missing" });
+      return;
+    }
+
+    try {
+      fs.mkdirSync(contentRoot, { recursive: true });
+    } catch {
+      /* ignore */
+    }
+
+    const safeName = String(id).replace(/[\\/:*?"<>|]+/g, "_");
+    const diskPath = path.join(contentRoot, safeName);
+    const metaPath = `${diskPath}.meta.json`;
+
+    // Fast path: local disk cache
+    try {
+      if (fs.existsSync(diskPath) && fs.existsSync(metaPath)) {
+        const meta = JSON.parse(fs.readFileSync(metaPath, "utf8"));
+        const ct = meta?.mimeType || "application/octet-stream";
+        res.writeHead(200, {
+          "Content-Type": ct,
+          "Access-Control-Allow-Origin": "*",
+        });
+        fs.createReadStream(diskPath).pipe(res);
+        return;
+      }
+    } catch {
+      /* fall through to proxy */
+    }
+
+    try {
+      const r = await fetch(`${cmsBaseUrl}/api/files/${encodeURIComponent(id)}`, {
+        cache: "no-store",
+      });
+      if (!r.ok) {
+        sendJson(res, r.status || 404, { error: "Media not found" });
+        return;
+      }
+      const ct = r.headers.get("content-type") || "application/octet-stream";
+      res.writeHead(200, {
+        "Content-Type": ct,
+        "Access-Control-Allow-Origin": "*",
+      });
+
+      if (!r.body) {
+        res.end();
+        return;
+      }
+
+      const ws = fs.createWriteStream(diskPath);
+      const pass = new PassThrough();
+      pass.pipe(ws);
+      pass.pipe(res);
+
+      await pipeline(Readable.fromWeb(r.body), pass);
+      try {
+        ws.close?.();
+      } catch {
+        /* ignore */
+      }
+      try {
+        fs.writeFileSync(metaPath, JSON.stringify({ mimeType: ct }), "utf8");
+      } catch {
+        /* ignore */
+      }
+    } catch (e) {
+      sendJson(res, 500, { error: e instanceof Error ? e.message : String(e) });
+    }
+    return;
+  }
+
+  // Admin «Обновить ПО» → server POSTs here for immediate apply (faster than WinRM)
+  if (req.method === "POST" && url.pathname === "/force-update") {
+    let raw = "";
+    req.on("data", (chunk) => {
+      raw += chunk;
+      if (raw.length > 8_000) req.destroy();
+    });
+    req.on("end", () => {
+      let target = "";
+      try {
+        const body = JSON.parse(raw || "{}");
+        target = String(body.softwareVersion || body.target || "").trim();
+      } catch {
+        /* ignore */
+      }
+      if (!target) target = readForceUpdateFlag() || "";
+      if (!target) {
+        sendJson(res, 400, { ok: false, error: "softwareVersion required" });
+        return;
+      }
+      try {
+        fs.mkdirSync(path.dirname(forceUpdatePath), { recursive: true });
+        fs.writeFileSync(forceUpdatePath, target, "utf8");
+      } catch (e) {
+        sendJson(res, 500, {
+          ok: false,
+          error: e instanceof Error ? e.message : String(e),
+        });
+        return;
+      }
+      sendJson(res, 200, {
+        ok: true,
+        applying: true,
+        target,
+        softwareVersion,
+        updateInProgress,
+      });
+      console.log(`[stella-agent] /force-update → ${target} (HTTP nudge)`);
+      void applySoftwareUpdate(target, { force: true });
+    });
+    return;
+  }
+
+  // Launch local .exe from copied game folder
+  // UI → agent → (robocopy UNC → ProgramData\\omskekran\\games) → run exe → restore Edge UI
+  if (req.method === "POST" && url.pathname === "/launch-game") {
+    let raw = "";
+    req.on("data", (chunk) => {
+      raw += chunk;
+      if (raw.length > 64_000) req.destroy();
+    });
+    req.on("end", async () => {
+      if (updateInProgress || gameLaunchInProgress || isStopRequested()) {
+        sendJson(res, 423, { ok: false, error: "Busy" });
+        return;
+      }
+
+      try {
+        const body = JSON.parse(raw || "{}");
+        const folder = String(body.folder || "").trim();
+        const exe = String(body.exe || "").trim();
+        if (!folder || !exe) {
+          sendJson(res, 400, { ok: false, error: "folder and exe required" });
+          return;
+        }
+
+        const uncRoot = process.env.STELLA_GAME_SHARE_UNC || "\\\\HYDRALISK3\\Patriot\\Игры парк победы";
+        const uncFolder = path.join(uncRoot, folder);
+
+        fs.mkdirSync(omskekranRoot, { recursive: true });
+        fs.mkdirSync(gamesRoot, { recursive: true });
+
+        const localFolder = path.join(gamesRoot, folder);
+        fs.mkdirSync(localFolder, { recursive: true });
+
+        // Incremental copy (best-effort). If share is down — keep last copy.
+        const runRobocopy = () =>
+          new Promise((resolve) => {
+            const args = [
+              uncFolder,
+              localFolder,
+              "/E",
+              "/COPY:DAT",
+              "/DCOPY:DAT",
+              "/XO",
+              "/R:2",
+              "/W:5",
+              "/NFL",
+              "/NDL",
+              "/NJH",
+              "/NJS",
+              "/NP",
+            ];
+            const ps = spawn("robocopy", args, { windowsHide: true });
+            ps.on("close", (code) => resolve(code ?? 1));
+            ps.on("error", () => resolve(1));
+          });
+
+        const robocode = await runRobocopy();
+        // Robocopy: 0..7 are success (0=no change, 1..7 are copied/needs attention)
+        const okCopy = robocode >= 0 && robocode <= 7;
+        if (!okCopy) {
+          console.warn(`[stella-agent] robocopy non-zero code=${robocode}; continue with last copy`);
+        }
+
+        // Resolve local exe path securely within localFolder
+        const safeExeRel = exe.replace(/[\/\\]+/g, path.sep);
+        const localExePath = path.resolve(path.join(localFolder, safeExeRel));
+        const localRoot = path.resolve(localFolder);
+        if (!localExePath.startsWith(localRoot)) {
+          sendJson(res, 400, { ok: false, error: "Invalid exe path" });
+          return;
+        }
+        if (!fs.existsSync(localExePath)) {
+          sendJson(res, 404, { ok: false, error: "Game exe not found on disk" });
+          return;
+        }
+
+        gameLaunchInProgress = true;
+        killEdgeUi();
+
+        const cached = readCachedConsoleUser() || "";
+        const exeEsc = String(localExePath).replace(/'/g, "''");
+        const cwdEsc = String(localFolder).replace(/'/g, "''");
+        const cachedEsc = String(cached).replace(/'/g, "''");
+
+        const taskName = `StellaKioskGameOnce`;
+        const script = `
+$ErrorActionPreference = 'Stop'
+function Resolve-User {
+  $ErrorActionPreference = 'SilentlyContinue'
+  $proc = Get-CimInstance Win32_Process -Filter "Name = 'explorer.exe'" -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($proc) {
+    $o = Invoke-CimMethod -InputObject $proc -MethodName GetOwner -ErrorAction SilentlyContinue
+    if ($o -and $o.User) {
+      if ($o.Domain) { return "$($o.Domain)\\$($o.User)" }
+      return $o.User
+    }
+  }
+  Get-CimInstance Win32_Process | ForEach-Object {
+    if ($_.SessionId -gt 0 -and $_.Name -match '^(msedge|sihost|taskhostw|ApplicationFrameHost|ShellExperienceHost)\\.exe$') {
+      $o = Invoke-CimMethod -InputObject $_ -MethodName GetOwner -ErrorAction SilentlyContinue
+      if ($o -and $o.User -and $o.User -notin @('SYSTEM','LOCAL SERVICE','NETWORK SERVICE')) {
+        if ($o.Domain) { return "$($o.Domain)\\$($o.User)" }
+        return $o.User
+      }
+    }
+  }
+  $cached = '${cachedEsc}'
+  if ($cached) { return $cached }
+  return $null
+}
+
+$user = Resolve-User
+if (-not $user) { exit 2 }
+
+$exe = '${exeEsc}'
+$cwd = '${cwdEsc}'
+$task = '${taskName}'
+
+try { Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue | Out-Null } catch {}
+
+$action = New-ScheduledTaskAction -Execute $exe -WorkingDirectory $cwd
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances Parallel
+$principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Highest
+$trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddSeconds(2)
+
+Register-ScheduledTask -TaskName $task -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force | Out-Null
+Start-ScheduledTask -TaskName $task -ErrorAction Stop | Out-Null
+
+# Wait until scheduled task finishes (game exit)
+for ($i=0; $i -lt 200000; $i++) {
+  $info = Get-ScheduledTaskInfo -TaskName $task -ErrorAction SilentlyContinue
+  if (-not $info) { break }
+  if ($info.State -ne 'Running') { break }
+  Start-Sleep -Milliseconds 500
+}
+
+try { Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue | Out-Null } catch {}
+Write-Output 'ok'
+`;
+
+        await new Promise((resolve, reject) => {
+          const ps = spawn(
+            "powershell.exe",
+            ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
+            { windowsHide: true }
+          );
+          ps.on("error", (err) => reject(err));
+          ps.on("close", (code) => {
+            if (code === 0) resolve(null);
+            else reject(new Error(`Game scheduled task failed code=${code}`));
+          });
+        });
+
+        relaunchEdgeUi();
+        gameLaunchInProgress = false;
+        sendJson(res, 200, { ok: true });
+      } catch (e) {
+        gameLaunchInProgress = false;
+        sendJson(res, 500, { ok: false, error: e instanceof Error ? e.message : String(e) });
+      }
     });
     return;
   }
@@ -261,9 +560,69 @@ const serverUrl = String(fileCfg.serverUrl || "")
 const heartbeatSec = Math.max(15, Number(fileCfg.heartbeatIntervalSec || 30));
 const syncIntervalSec = Math.max(30, Number(fileCfg.syncIntervalSec || 300));
 const softwareCheckSec = Math.max(
-  20,
-  Number(fileCfg.softwareCheckIntervalSec || 30)
+  5,
+  Number(fileCfg.softwareCheckIntervalSec || 5)
 );
+
+// —— Game share listing (for admin folder picker) ——
+const gameShareUncRoot = String(
+  process.env.STELLA_GAME_SHARE_UNC || "\\\\HYDRALISK3\\Patriot\\Игры парк победы"
+).trim();
+let gameShareFolders = [];
+let gameShareScanBusy = false;
+let lastGameShareScanAt = 0;
+
+async function walkFolderForExes(rootDir, folderBaseDir, depthLeft, out) {
+  if (out.length >= 80) return;
+  if (depthLeft < 0) return;
+  const entries = await fs.promises.readdir(rootDir, { withFileTypes: true }).catch(() => []);
+  for (const e of entries) {
+    if (out.length >= 80) break;
+    const full = path.join(rootDir, e.name);
+    if (e.isFile()) {
+      if (String(e.name).toLowerCase().endsWith(".exe")) {
+        out.push(path.relative(folderBaseDir, full));
+      }
+      continue;
+    }
+    if (e.isDirectory() && depthLeft > 0) {
+      await walkFolderForExes(full, folderBaseDir, depthLeft - 1, out);
+    }
+  }
+}
+
+async function scanGameShareFolders() {
+  const now = Date.now();
+  if (gameShareScanBusy) return;
+  // avoid ultra-frequent scans
+  if (now - lastGameShareScanAt < 2 * 60 * 1000) return;
+  gameShareScanBusy = true;
+  try {
+    const top = await fs.promises.readdir(gameShareUncRoot, { withFileTypes: true }).catch(() => null);
+    if (!top) return;
+    const folders = [];
+    for (const e of top) {
+      if (!e.isDirectory()) continue;
+      if (folders.length >= 200) break;
+      const folderName = String(e.name);
+      const folderPath = path.join(gameShareUncRoot, folderName);
+      const exes = [];
+      await walkFolderForExes(folderPath, folderPath, 3, exes);
+      // only keep folders that actually contain executables
+      if (exes.length) folders.push({ name: folderName, exes });
+    }
+    gameShareFolders = folders;
+    lastGameShareScanAt = now;
+  } catch {
+    /* keep last listing */
+  } finally {
+    gameShareScanBusy = false;
+  }
+}
+
+// Initial scan + periodic refresh
+void scanGameShareFolders();
+setInterval(() => void scanGameShareFolders(), 5 * 60 * 1000);
 
 async function pushHeartbeat() {
   if (!serverUrl) return;
@@ -278,6 +637,7 @@ async function pushHeartbeat() {
         appVersion,
         softwareVersion,
         hostname,
+        gameShare: gameShareFolders.length ? { folders: gameShareFolders } : undefined,
       }),
     });
     if (!res.ok) return;
@@ -343,22 +703,45 @@ function fileSha(filePath) {
 function scheduleAgentRestart() {
   console.log("[stella-agent] scheduling restart via StellaKioskAgent");
   const cmd =
-    "timeout /t 4 /nobreak >nul & schtasks /Run /TN StellaKioskAgent >nul 2>&1";
+    "timeout /t 1 /nobreak >nul & schtasks /Run /TN StellaKioskAgent >nul 2>&1";
   const child = spawn("cmd.exe", ["/c", cmd], {
     detached: true,
     stdio: "ignore",
     windowsHide: true,
   });
   child.unref();
-  setTimeout(() => process.exit(0), 1000);
+  setTimeout(() => process.exit(0), 400);
 }
 
 async function downloadUpdateZip(url, dest) {
   const res = await fetch(url, { cache: "no-store" });
   if (!res.ok) throw new Error(`download ${res.status}`);
-  const buf = Buffer.from(await res.arrayBuffer());
-  if (buf.length < 64) throw new Error("update zip too small");
-  fs.writeFileSync(dest, buf);
+  if (res.body && typeof Readable.fromWeb === "function") {
+    await pipeline(Readable.fromWeb(res.body), fs.createWriteStream(dest));
+  } else {
+    const buf = Buffer.from(await res.arrayBuffer());
+    fs.writeFileSync(dest, buf);
+  }
+  const size = fs.statSync(dest).size;
+  if (size < 64) throw new Error("update zip too small");
+}
+
+function extractUpdateZip(zipPath, stage) {
+  // tar.exe (Windows 10+) is much faster than PowerShell Expand-Archive
+  try {
+    execFileSync("tar.exe", ["-xf", zipPath, "-C", stage], {
+      windowsHide: true,
+      stdio: "ignore",
+    });
+    return;
+  } catch {
+    /* fallback */
+  }
+  const zipEsc = zipPath.replace(/'/g, "''");
+  const stageEsc = stage.replace(/'/g, "''");
+  return runPowerShell(
+    `Expand-Archive -LiteralPath '${zipEsc}' -DestinationPath '${stageEsc}' -Force`
+  );
 }
 
 async function applySoftwareUpdate(remoteVersion, opts = {}) {
@@ -372,6 +755,7 @@ async function applySoftwareUpdate(remoteVersion, opts = {}) {
   if (force && remoteVersion && remoteVersion === softwareVersion) {
     clearForceUpdateFlag();
     console.log(`[stella-agent] FORCE_UPDATE cleared (already on ${softwareVersion})`);
+    void pushHeartbeat();
     return;
   }
   if (force) nextUpdateAllowedAt = 0;
@@ -388,9 +772,7 @@ async function applySoftwareUpdate(remoteVersion, opts = {}) {
   try {
     await downloadUpdateZip(`${serverUrl}/api/deploy/update.zip`, zipPath);
     fs.mkdirSync(stage, { recursive: true });
-    const zipEsc = zipPath.replace(/'/g, "''");
-    const stageEsc = stage.replace(/'/g, "''");
-    await runPowerShell(`Expand-Archive -LiteralPath '${zipEsc}' -DestinationPath '${stageEsc}' -Force`);
+    await extractUpdateZip(zipPath, stage);
 
     let payload = stage;
     const entries = fs.readdirSync(stage);
@@ -444,6 +826,13 @@ async function applySoftwareUpdate(remoteVersion, opts = {}) {
         (agentChanged ? " (agent changed → restart)" : " (UI only, no restart)")
     );
 
+    // Admin "Обновляется…" clears on heartbeat — don't wait up to 30s
+    try {
+      await pushHeartbeat();
+    } catch {
+      /* ignore */
+    }
+
     if (agentChanged) {
       // Next agent boot should hard-restart Edge (new watchdog kills then launches)
       try {
@@ -452,17 +841,45 @@ async function applySoftwareUpdate(remoteVersion, opts = {}) {
         /* ignore */
       }
       scheduleAgentRestart();
+      // Safety: if process fails to exit, allow another OTA attempt later
+      setTimeout(() => {
+        updateInProgress = false;
+      }, 12_000);
       return;
     }
-    // UI-only OTA: hard-restart Edge so visitors see new assets immediately
-    console.log("[stella-agent] restarting Edge UI after software update");
+    // UI-only OTA: keep Edge alive — SPA reloads via health poll (seconds, not Edge bounce)
+    console.log("[stella-agent] UI-only OTA applied — soft reload (Edge stays up)");
     try {
-      fs.writeFileSync(path.join(root, "LAUNCH_UI"), String(Date.now()), "utf8");
+      fs.writeFileSync(path.join(root, "OTA_SOFT_RELOAD"), softwareVersion, "utf8");
     } catch {
       /* ignore */
     }
-    relaunchEdgeUi();
+    lastPoliciesMode = null;
+    applyOsLockdownPolicies(wantKeyBlock);
+    // New block-hotkeys.ps1 only takes effect after the LL-hook process restarts
+    if (wantKeyBlock && !isLockdownSuppressed()) {
+      stopKeyBlockProcesses();
+      setTimeout(() => {
+        if (wantKeyBlock && !isLockdownSuppressed() && readBlockKeyboardFlag()) {
+          relaunchKeyBlock();
+        }
+      }, 1_200);
+    }
     updateInProgress = false;
+    // Old SPA without 3s health poll: fall back to Edge relaunch
+    const softVer = softwareVersion;
+    setTimeout(() => {
+      try {
+        const p = path.join(root, "OTA_SOFT_RELOAD");
+        if (!fs.existsSync(p)) return;
+        if (fs.readFileSync(p, "utf8").trim() !== softVer) return;
+        fs.unlinkSync(p);
+        console.log("[stella-agent] soft reload timeout — relaunching Edge");
+        relaunchEdgeUi();
+      } catch {
+        /* ignore */
+      }
+    }, 8_000);
   } catch (e) {
     updateFailCount += 1;
     const backoffMs = Math.min(10 * 60 * 1000, 30_000 * Math.pow(2, Math.min(updateFailCount, 4)));
@@ -529,12 +946,28 @@ async function checkSoftwareUpdate() {
 }
 
 function watchForceUpdateFlag() {
-  setInterval(() => {
+  const tryApply = () => {
     if (!serverUrl || updateInProgress) return;
     const target = readForceUpdateFlag();
     if (!target) return;
     void applySoftwareUpdate(target, { force: true });
-  }, 1_000);
+  };
+  setInterval(tryApply, 250);
+  try {
+    const dir = path.dirname(forceUpdatePath);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.watch(dir, { persistent: true }, (_evt, filename) => {
+      if (!filename) return;
+      if (String(filename).toUpperCase() !== "FORCE_UPDATE") return;
+      tryApply();
+    });
+    console.log("[stella-agent] FORCE_UPDATE watch on (immediate OTA)");
+  } catch (e) {
+    console.warn(
+      "[stella-agent] FORCE_UPDATE fs.watch failed:",
+      e instanceof Error ? e.message : e
+    );
+  }
 }
 
 if (serverUrl) {
@@ -543,21 +976,8 @@ if (serverUrl) {
   void pushHeartbeat();
   setInterval(() => void pushHeartbeat(), heartbeatSec * 1000);
   watchForceUpdateFlag();
-  // If admin already left FORCE_UPDATE, apply immediately (no stagger)
-  if (readForceUpdateFlag()) {
-    console.log("[stella-agent] FORCE_UPDATE present at start — applying now");
-    void checkSoftwareUpdate();
-  } else {
-    let stagger = 3_000;
-    try {
-      const h = createHash("sha1").update(String(kioskId)).digest();
-      stagger = 3_000 + (h.readUInt16BE(0) % 12_000);
-    } catch {
-      stagger = 4_000 + Math.floor(Math.random() * 8_000);
-    }
-    console.log(`[stella-agent] first OTA check in ${Math.round(stagger / 1000)}s`);
-    setTimeout(() => void checkSoftwareUpdate(), stagger);
-  }
+  // Check for OTA immediately, then every softwareCheckSec (default 5s)
+  void checkSoftwareUpdate();
   setInterval(() => void checkSoftwareUpdate(), softwareCheckSec * 1000);
 } else {
   console.warn("[stella-agent] no serverUrl in kiosk.json — heartbeat/updates disabled");
@@ -650,15 +1070,26 @@ function edgeUiArgs() {
   return [
     `--user-data-dir=${profile}`,
     `--kiosk`,
-    `http://127.0.0.1:${uiPort}/`,
+    `http://127.0.0.1:${uiPort}/?v=${encodeURIComponent(softwareVersion || "0")}`,
     `--edge-kiosk-type=fullscreen`,
     `--no-first-run`,
     `--disable-session-crashed-bubble`,
     `--noerrdialogs`,
     `--check-for-update-interval=31536000`,
-    `--disable-features=msEdgeSidebar,TranslateUI,InfiniteSessionRestore,msVisualSearch`,
+    `--disable-features=msEdgeSidebar,TranslateUI,InfiniteSessionRestore,msVisualSearch,EdgeShoppingCart,msEdgeDiscover,msEdgeFeedback,msSync,Sync,EdgeCollections,msShoppingFeature,EdgeSendFeedback`,
     `--disable-pinch`,
     `--overscroll-history-navigation=0`,
+    `--disable-popup-blocking`,
+    `--disable-sync`,
+    `--disable-background-networking`,
+    `--disable-client-side-phishing-detection`,
+    `--disable-component-update`,
+    `--disable-default-apps`,
+    `--disable-domain-reliability`,
+    `--disable-breakpad`,
+    `--disable-crash-reporter`,
+    `--no-pings`,
+    `--metrics-recording-only`,
   ].join(" ");
 }
 
@@ -689,9 +1120,9 @@ function killEdgeUi() {
         "-ExecutionPolicy",
         "Bypass",
         "-Command",
-        `Get-CimInstance Win32_Process -Filter "Name = 'msedge.exe'" -ErrorAction SilentlyContinue | ForEach-Object { if ($_.CommandLine -and $_.CommandLine -like '*${marker}*') { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } catch {} } }; Start-Sleep -Milliseconds 400`,
+        `$m='${marker}'; Get-CimInstance Win32_Process -Filter "Name = 'msedge.exe'" -EA SilentlyContinue | ForEach-Object { if ($_.CommandLine -and $_.CommandLine -like "*$m*") { Stop-Process -Id $_.ProcessId -Force -EA SilentlyContinue } }`,
       ],
-      { windowsHide: true, timeout: 15000 }
+      { windowsHide: true, timeout: 6_000 }
     );
   } catch {
     /* best effort */
@@ -710,12 +1141,15 @@ function applySoftwareEnabledSetting(enabled) {
       }
       console.log("[stella-agent] softwareEnabled=ON — UI may start");
     }
+    ensureConsoleUserCached();
+    ensureExplorerShell();
   } else {
     setSoftwareDisabledFlag(true);
     stopKeyBlockProcesses();
     applyOsLockdownPolicies(false);
     killEdgeUi();
-    console.log("[stella-agent] softwareEnabled=OFF — UI stopped, lockdown cleared (persists across reboot)");
+    ensureExplorerShell();
+    console.log("[stella-agent] softwareEnabled=OFF — UI stopped, Explorer on");
   }
 }
 
@@ -739,6 +1173,207 @@ function isEdgeKioskRunning() {
   });
 }
 
+const consoleUserPath = path.join(
+  process.env.ProgramData || "C:\\ProgramData",
+  "StellaKiosk",
+  "CONSOLE_USER"
+);
+let explorerReady = false;
+
+function readCachedConsoleUser() {
+  try {
+    const v = fs.readFileSync(consoleUserPath, "utf8").trim();
+    return v || null;
+  } catch {
+    return null;
+  }
+}
+
+function writeCachedConsoleUser(user) {
+  try {
+    fs.mkdirSync(path.dirname(consoleUserPath), { recursive: true });
+    fs.writeFileSync(consoleUserPath, String(user).trim(), "utf8");
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Resolve interactive DOMAIN\\user without requiring explorer.exe. */
+function resolveInteractiveUserPs(cachedUser) {
+  const cached = String(cachedUser || "").replace(/'/g, "''");
+  return `
+$ErrorActionPreference = 'SilentlyContinue'
+function Emit-User([string]$u) {
+  if ([string]::IsNullOrWhiteSpace($u)) { return $false }
+  if ($u -match '^(NT AUTHORITY\\\\|Window Manager\\\\|IIS APPPOOL\\\\)') { return $false }
+  Write-Output $u.Trim()
+  return $true
+}
+$cs = Get-CimInstance Win32_ComputerSystem
+if ($cs -and $cs.UserName) { if (Emit-User $cs.UserName) { exit 0 } }
+$proc = Get-CimInstance Win32_Process -Filter "Name = 'explorer.exe'" | Select-Object -First 1
+if ($proc) {
+  $o = Invoke-CimMethod -InputObject $proc -MethodName GetOwner
+  if ($o -and $o.User) {
+    $u = if ($o.Domain) { "$($o.Domain)\\$($o.User)" } else { $o.User }
+    if (Emit-User $u) { exit 0 }
+  }
+}
+Get-CimInstance Win32_Process | ForEach-Object {
+  if ($_.SessionId -gt 0 -and $_.Name -match '^(msedge|sihost|taskhostw|ApplicationFrameHost|ShellExperienceHost)\\.exe$') {
+    $o = Invoke-CimMethod -InputObject $_ -MethodName GetOwner -ErrorAction SilentlyContinue
+    if ($o -and $o.User -and $o.User -notin @('SYSTEM','LOCAL SERVICE','NETWORK SERVICE')) {
+      $u = if ($o.Domain) { "$($o.Domain)\\$($o.User)" } else { $o.User }
+      if (Emit-User $u) { exit 0 }
+    }
+  }
+}
+$cached = '${cached}'
+if ($cached) { if (Emit-User $cached) { exit 0 } }
+Write-Output 'no-user'
+exit 2
+`;
+}
+
+function ensureConsoleUserCached() {
+  try {
+    const out = execFileSync(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        resolveInteractiveUserPs(readCachedConsoleUser()),
+      ],
+      { windowsHide: true, timeout: 10_000, encoding: "utf8" }
+    );
+    const user = String(out || "").trim().split(/\r?\n/).filter(Boolean).pop();
+    if (user && user !== "no-user") {
+      writeCachedConsoleUser(user);
+      return user;
+    }
+  } catch {
+    /* ignore */
+  }
+  return readCachedConsoleUser();
+}
+
+function setExplorerAutoRestart(enabled) {
+  try {
+    execFileSync(
+      "reg.exe",
+      [
+        "add",
+        "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon",
+        "/v",
+        "AutoRestartShell",
+        "/t",
+        "REG_SZ",
+        "/d",
+        enabled ? "1" : "0",
+        "/f",
+      ],
+      { windowsHide: true, stdio: "ignore" }
+    );
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Full Explorer shell: desktop + taskbar visible, process kept running. */
+function ensureExplorerShell() {
+  setExplorerAutoRestart(true);
+  const user = ensureConsoleUserCached() || readCachedConsoleUser();
+  const userEsc = String(user || "").replace(/'/g, "''");
+  const script = `
+$ErrorActionPreference = 'SilentlyContinue'
+$pol = 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer'
+if (Test-Path $pol) { Remove-ItemProperty -Path $pol -Name 'NoDesktop' -ErrorAction SilentlyContinue }
+
+function Start-ExplorerIfNeeded {
+  if (Get-Process -Name explorer -ErrorAction SilentlyContinue) { return 'already' }
+  $user = '${userEsc}'
+  if (-not $user) {
+    Start-Process -FilePath explorer.exe -ErrorAction SilentlyContinue | Out-Null
+    return 'local'
+  }
+  $once = 'StellaKioskStartExplorer'
+  $action = New-ScheduledTaskAction -Execute 'explorer.exe'
+  $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances Parallel
+  $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Highest
+  Unregister-ScheduledTask -TaskName $once -Confirm:$false -ErrorAction SilentlyContinue
+  Register-ScheduledTask -TaskName $once -Action $action -Principal $principal -Settings $settings -Force | Out-Null
+  Start-ScheduledTask -TaskName $once -ErrorAction SilentlyContinue
+  Start-Sleep -Milliseconds 800
+  Unregister-ScheduledTask -TaskName $once -Confirm:$false -ErrorAction SilentlyContinue
+  return "started:$user"
+}
+
+$ex = Start-ExplorerIfNeeded
+$user = '${userEsc}'
+$inner = @'
+$ErrorActionPreference = "SilentlyContinue"
+$adv = "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced"
+if (-not (Test-Path $adv)) { New-Item -Path $adv -Force | Out-Null }
+New-ItemProperty -Path $adv -Name "HideIcons" -Value 0 -PropertyType DWord -Force | Out-Null
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public static class StellaTrayShow {
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr FindWindow(string c, string w);
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int n);
+  [DllImport("user32.dll")] public static extern bool SystemParametersInfo(uint a, uint b, IntPtr c, uint d);
+}
+"@
+foreach ($cls in @("Shell_TrayWnd","Shell_SecondaryTrayWnd")) {
+  $h = [StellaTrayShow]::FindWindow($cls, $null)
+  if ($h -ne [IntPtr]::Zero) { [void][StellaTrayShow]::ShowWindow($h, 5) }
+}
+[void][StellaTrayShow]::SystemParametersInfo(0x0014, 0, [IntPtr]::Zero, 3)
+'@
+if ($user) {
+  $tmp = Join-Path $env:TEMP ('stella-shell-show-' + [guid]::NewGuid().ToString('n') + '.ps1')
+  Set-Content -Path $tmp -Value $inner -Encoding ASCII
+  $once = 'StellaKioskShellChrome'
+  $arg = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + $tmp + '"'
+  $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $arg
+  $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances Parallel -ExecutionTimeLimit (New-TimeSpan -Minutes 2)
+  $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Highest
+  Unregister-ScheduledTask -TaskName $once -Confirm:$false -ErrorAction SilentlyContinue
+  Register-ScheduledTask -TaskName $once -Action $action -Principal $principal -Settings $settings -Force | Out-Null
+  Start-ScheduledTask -TaskName $once -ErrorAction SilentlyContinue
+  Start-Sleep -Milliseconds 900
+  Unregister-ScheduledTask -TaskName $once -Confirm:$false -ErrorAction SilentlyContinue
+  Remove-Item -Path $tmp -Force -ErrorAction SilentlyContinue
+}
+Write-Output ("explorer-shell ok=$ex")
+`;
+  // Non-blocking — sync PowerShell here freezes OTA / health on the agent event loop
+  const ps = spawn(
+    "powershell.exe",
+    ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
+    { windowsHide: true }
+  );
+  ps.on("error", () => {});
+  ps.on("close", (code) => {
+    if (!explorerReady) {
+      console.log(`[stella-agent] Explorer shell ensured (full desktop/taskbar) code=${code ?? "?"}`);
+    }
+    explorerReady = true;
+  });
+}
+
+function suppressExplorerShell() {
+  // Kept for call sites — no longer hides/kills Explorer
+  ensureExplorerShell();
+}
+
+function restoreExplorerShell() {
+  ensureExplorerShell();
+}
+
 function relaunchEdgeUi() {
   const edge = findEdgeExe();
   if (!edge) {
@@ -747,32 +1382,62 @@ function relaunchEdgeUi() {
   }
   // Always close existing kiosk Edge first — IgnoreNew previously left stale UI on screen after OTA
   killEdgeUi();
+  // Corrupted Chromium IndexedDB → "backing store" errors and blank gallery images
+  try {
+    const idb = path.join(edgeProfileDir(), "Default", "IndexedDB");
+    if (fs.existsSync(idb)) fs.rmSync(idb, { recursive: true, force: true });
+  } catch {
+    /* ignore */
+  }
   const args = edgeUiArgs();
+  const cached = readCachedConsoleUser() || "";
   // Must run on the interactive desktop of the logged-on user (SYSTEM Session 0 is invisible).
-  const script = `
+  // Do NOT require explorer.exe — console user may be resolved via Edge/sihost.
+  const script2 = `
 $ErrorActionPreference = 'Stop'
 $edge = '${edge.replace(/'/g, "''")}'
 $uiArgs = '${args.replace(/'/g, "''")}'
 $once = 'StellaKioskStartNow'
 $taskUi = 'StellaKioskUI'
+$cachePath = '${consoleUserPath.replace(/'/g, "''")}'
+$cached = '${cached.replace(/'/g, "''")}'
 
-$proc = Get-CimInstance Win32_Process -Filter "Name = 'explorer.exe'" -ErrorAction SilentlyContinue | Select-Object -First 1
-if (-not $proc) {
-  Write-Output 'no-explorer'
+function Resolve-User {
+  $ErrorActionPreference = 'SilentlyContinue'
+  $cs = Get-CimInstance Win32_ComputerSystem
+  if ($cs -and $cs.UserName) { return $cs.UserName }
+  $proc = Get-CimInstance Win32_Process -Filter "Name = 'explorer.exe'" | Select-Object -First 1
+  if ($proc) {
+    $o = Invoke-CimMethod -InputObject $proc -MethodName GetOwner
+    if ($o -and $o.User) {
+      if ($o.Domain) { return "$($o.Domain)\\$($o.User)" }
+      return $o.User
+    }
+  }
+  Get-CimInstance Win32_Process | ForEach-Object {
+    if ($_.SessionId -gt 0 -and $_.Name -match '^(msedge|sihost|taskhostw|ApplicationFrameHost)\\.exe$') {
+      $o = Invoke-CimMethod -InputObject $_ -MethodName GetOwner -ErrorAction SilentlyContinue
+      if ($o -and $o.User -and $o.User -notin @('SYSTEM','LOCAL SERVICE','NETWORK SERVICE')) {
+        if ($o.Domain) { return "$($o.Domain)\\$($o.User)" }
+        return $o.User
+      }
+    }
+  }
+  if ($cached) { return $cached }
+  return $null
+}
+
+$user = Resolve-User
+if (-not $user) {
+  Write-Output 'no-user'
   exit 2
 }
-$owner = Invoke-CimMethod -InputObject $proc -MethodName GetOwner -ErrorAction SilentlyContinue
-if (-not $owner -or [string]::IsNullOrWhiteSpace($owner.User)) {
-  Write-Output 'no-owner'
-  exit 3
-}
-$user = if ($owner.Domain) { "$($owner.Domain)\\$($owner.User)" } else { $owner.User }
+try { Set-Content -Path $cachePath -Value $user -Encoding ASCII -Force } catch {}
 
 $action = New-ScheduledTaskAction -Execute $edge -Argument $uiArgs
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances Parallel
 $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Highest
 
-# Keep AtLogOn task updated for next reboot
 if (Get-ScheduledTask -TaskName $taskUi -ErrorAction SilentlyContinue) {
   try { Enable-ScheduledTask -TaskName $taskUi -ErrorAction SilentlyContinue } catch {}
   Set-ScheduledTask -TaskName $taskUi -Action $action -ErrorAction SilentlyContinue | Out-Null
@@ -788,7 +1453,7 @@ Write-Output "ok:$user"
 `;
   const ps = spawn(
     "powershell.exe",
-    ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
+    ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script2],
     { windowsHide: true }
   );
   let out = "";
@@ -800,8 +1465,11 @@ Write-Output "ok:$user"
   });
   ps.on("close", (code) => {
     const msg = out.trim().slice(0, 200);
-    if (code === 0) console.log(`[stella-agent] Edge UI launched (${msg || "ok"})`);
-    else console.warn(`[stella-agent] Edge UI launch failed code=${code} ${msg}`);
+    if (code === 0) {
+      console.log(`[stella-agent] Edge UI launched (${msg || "ok"})`);
+      const m = /ok:(.+)$/m.exec(msg);
+      if (m?.[1]) writeCachedConsoleUser(m[1].trim());
+    } else console.warn(`[stella-agent] Edge UI launch failed code=${code} ${msg}`);
   });
   ps.on("error", (err) => {
     console.warn("[stella-agent] Edge UI launch spawn error:", err.message);
@@ -829,10 +1497,15 @@ async function watchEdgeUi() {
   if (edgeWatchBusy) return;
   if (isStopRequested()) {
     stopKeyBlockProcesses();
+    restoreExplorerShell();
     return;
   }
   edgeWatchBusy = true;
   try {
+    if (updateInProgress) return;
+    if (gameLaunchInProgress) return;
+    ensureConsoleUserCached();
+    if (!explorerReady) ensureExplorerShell();
     const forceLaunch = consumeLaunchUiFlag();
     const running = await isEdgeKioskRunning();
     if (forceLaunch || !running) {
@@ -870,11 +1543,11 @@ function isLockdownSuppressed() {
 
 function readBlockKeyboardFlag() {
   try {
-    if (!fs.existsSync(blockKeyboardFlagPath)) return false;
+    if (!fs.existsSync(blockKeyboardFlagPath)) return true; // floor default: locked
     const v = fs.readFileSync(blockKeyboardFlagPath, "utf8").trim().toLowerCase();
     return v === "1" || v === "true" || v === "on";
   } catch {
-    return false;
+    return true;
   }
 }
 
@@ -1008,24 +1681,50 @@ function relaunchKeyBlock() {
   }
   writeBlockKeyboardFlag(true);
   const scriptPath = keyBlockScriptPath.replace(/'/g, "''");
+  const cached = (readCachedConsoleUser() || "").replace(/'/g, "''");
+  const cachePath = consoleUserPath.replace(/'/g, "''");
   const script = `
 $ErrorActionPreference = 'Stop'
 $ps1 = '${scriptPath}'
 $once = 'StellaKioskKeyBlockNow'
 $task = 'StellaKioskKeyBlock'
+$cachePath = '${cachePath}'
+$cached = '${cached}'
 
-$proc = Get-CimInstance Win32_Process -Filter "Name = 'explorer.exe'" -ErrorAction SilentlyContinue | Select-Object -First 1
-if (-not $proc) { Write-Output 'no-explorer'; exit 2 }
-$owner = Invoke-CimMethod -InputObject $proc -MethodName GetOwner -ErrorAction SilentlyContinue
-if (-not $owner -or [string]::IsNullOrWhiteSpace($owner.User)) { Write-Output 'no-owner'; exit 3 }
-$user = if ($owner.Domain) { "$($owner.Domain)\\$($owner.User)" } else { $owner.User }
+function Resolve-User {
+  $ErrorActionPreference = 'SilentlyContinue'
+  $cs = Get-CimInstance Win32_ComputerSystem
+  if ($cs -and $cs.UserName) { return $cs.UserName }
+  $proc = Get-CimInstance Win32_Process -Filter "Name = 'explorer.exe'" | Select-Object -First 1
+  if ($proc) {
+    $o = Invoke-CimMethod -InputObject $proc -MethodName GetOwner
+    if ($o -and $o.User) {
+      if ($o.Domain) { return "$($o.Domain)\\$($o.User)" }
+      return $o.User
+    }
+  }
+  Get-CimInstance Win32_Process | ForEach-Object {
+    if ($_.SessionId -gt 0 -and $_.Name -match '^(msedge|sihost|taskhostw|ApplicationFrameHost)\\.exe$') {
+      $o = Invoke-CimMethod -InputObject $_ -MethodName GetOwner -ErrorAction SilentlyContinue
+      if ($o -and $o.User -and $o.User -notin @('SYSTEM','LOCAL SERVICE','NETWORK SERVICE')) {
+        if ($o.Domain) { return "$($o.Domain)\\$($o.User)" }
+        return $o.User
+      }
+    }
+  }
+  if ($cached) { return $cached }
+  return $null
+}
+
+$user = Resolve-User
+if (-not $user) { Write-Output 'no-user'; exit 2 }
+try { Set-Content -Path $cachePath -Value $user -Encoding ASCII -Force } catch {}
 
 $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ("-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \`"$ps1\`"")
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances Parallel -ExecutionTimeLimit ([TimeSpan]::Zero)
 $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Highest
 $trigger = New-ScheduledTaskTrigger -AtLogOn
 
-# Persistent AtLogOn task (survives reboot)
 if (Get-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue) {
   try { Enable-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue } catch {}
   Set-ScheduledTask -TaskName $task -Action $action -Trigger $trigger -Settings $settings -Principal $principal -ErrorAction SilentlyContinue | Out-Null
@@ -1070,8 +1769,8 @@ if (isLockdownSuppressed() || !readBlockKeyboardFlag()) {
 }
 writeBlockKeyboardFlag(wantKeyBlock);
 applyOsLockdownPolicies(wantKeyBlock);
-setTimeout(() => void watchEdgeUi(), 1_500);
-setInterval(() => void watchEdgeUi(), 8_000);
+setTimeout(() => void watchEdgeUi(), 1_000);
+setInterval(() => void watchEdgeUi(), 3_000);
 // LAUNCH_UI from admin Start — react within ~1s, not only on the 8s watchdog tick
 setInterval(() => {
   try {

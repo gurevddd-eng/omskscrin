@@ -1,1242 +1,216 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
-import type { KioskDto } from "@stella/shared";
-import {
-  INSTALL_STATUS_LABEL,
-  POLICY_CLEAR_STATUS_LABEL,
-  PROBE_STATUS_LABEL,
-  UI_START_STATUS_LABEL,
-  UI_STOP_STATUS_LABEL,
-} from "@stella/shared";
-import { useAuth } from "../auth";
-import { api } from "../api";
-import { DeployStatusPanel, type DeployStatus } from "../components/kiosk/DeployStatusPanel";
-import { InstallTaskProgress, PolicyClearTaskProgress, UiStartTaskProgress, UiStopTaskProgress } from "../components/kiosk/KioskTaskProgress";
-import { kioskHasProblem, probeBadgeClass } from "../components/kiosk/status";
+import { DeployStatusPanel } from "../components/kiosk/DeployStatusPanel";
+import { KioskFleetJobsBanner, KioskOpRunner } from "../components/kiosk/KioskOpRunner";
 import { PageShell } from "../components/ui/PageShell";
 import { Alert } from "../components/ui/Alert";
-import { Card } from "../components/ui/Card";
 import { Stat, StatGrid } from "../components/ui/StatGrid";
-import { useConfirm } from "../components/ui/confirm";
+import { KioskAddForm } from "./kiosks/KioskAddForm";
+import { KioskDetail } from "./kiosks/KioskDetail";
+import { KioskList } from "./kiosks/KioskList";
+import { useKiosksPage } from "./kiosks/useKiosksPage";
 
-type ExhibitOpt = { id: string; title: string };
-type FilterTab = "all" | "online" | "problems" | "installing";
-
-function formatSeen(iso: string | null) {
-  if (!iso) return "никогда";
-  try {
-    return new Date(iso).toLocaleString("ru-RU", {
-      day: "2-digit",
-      month: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  } catch {
-    return "—";
-  }
-}
-
-function kioskDotClass(k: KioskDto) {
-  if (k.probeStatus === "healthy" && k.online) return "ok";
-  if (kioskHasProblem(k)) return "bad";
-  if (k.online) return "warn";
-  return "off";
-}
-
-function kioskBusyLabel(k: KioskDto) {
-  if (k.uiStopStatus === "running") return UI_STOP_STATUS_LABEL.running;
-  if (k.uiStartStatus === "running") return UI_START_STATUS_LABEL.running;
-  if (k.policyClearStatus === "running") return POLICY_CLEAR_STATUS_LABEL.running;
-  if (k.installStatus === "running" || k.installStatus === "queued") return INSTALL_STATUS_LABEL[k.installStatus];
-  return null;
-}
-
-type KioskDetailProps = {
-  kiosk: KioskDto;
-  exhibits: ExhibitOpt[];
-  canEdit: boolean;
-  deployReady: boolean;
-  probing: boolean;
-  installing: boolean;
-  cancelling: boolean;
-  starting: boolean;
-  stopping: boolean;
-  savingNetwork: boolean;
-  pushingConfig: boolean;
-  clearingPolicies: boolean;
-  updatingSoftware: boolean;
-  targetSoftwareVersion: string | null;
-  onBind: (id: string, exhibitId: string) => void;
-  onProbe: (id: string) => void;
-  onInstall: (id: string) => void;
-  onCancel: (id: string) => void;
-  onStart: (id: string) => void;
-  onStop: (id: string) => void;
-  onSoftwareUpdate: (id: string) => void;
-  onRemoveFromAdmin: (id: string) => void;
-  onRemoveFull: (id: string) => void;
-  onSaveNetwork: (id: string, data: { healthPort: number; uiPort: number; serverUrl: string }) => void;
-  onPushConfig: (id: string) => void;
-  onClearPolicies: (id: string) => void;
-};
-
-function KioskDetailPanel(props: KioskDetailProps) {
-  const k = props.kiosk;
-  const busyInstall = k.installStatus === "running" || k.installStatus === "queued";
-  const busyPolicyClear = k.policyClearStatus === "running";
-  const busyUiStart = k.uiStartStatus === "running";
-  const busyUiStop = k.uiStopStatus === "running";
-  const locked =
-    props.installing ||
-    props.starting ||
-    props.stopping ||
-    props.updatingSoftware ||
-    busyPolicyClear ||
-    busyUiStart ||
-    busyUiStop;
-
-  const swLocal = k.softwareVersion || null;
-  const swTarget = props.targetSoftwareVersion;
-  const swOutdated = Boolean(swTarget && swLocal && swLocal !== swTarget);
-  const swUnknown = Boolean(swTarget && !swLocal);
-
-  const [healthPort, setHealthPort] = useState(String(k.healthPort));
-  const [uiPort, setUiPort] = useState(String(k.uiPort));
-  const [serverUrl, setServerUrl] = useState(k.serverUrl || "");
-
-  useEffect(() => {
-    setHealthPort(String(k.healthPort));
-    setUiPort(String(k.uiPort));
-    setServerUrl(k.serverUrl || "");
-  }, [k.id, k.healthPort, k.uiPort, k.serverUrl]);
+export function KiosksPage() {
+  const p = useKiosksPage();
 
   return (
-    <Card padding="none" className="kx-panel">
-      <header className="kx-head">
-        <div>
-          <h2 className="kx-head__title">{k.name}</h2>
-          <p className="kx-head__sub">{k.hostname}</p>
-          <div className="kx-head__badges">
-            <span className={`badge ${probeBadgeClass(k.probeStatus)}`}>{PROBE_STATUS_LABEL[k.probeStatus]}</span>
-            <span className={`badge ${k.online ? "online" : "offline"}`}>{k.online ? "онлайн" : "офлайн"}</span>
-            <span className="badge">{INSTALL_STATUS_LABEL[k.installStatus]}</span>
-          </div>
-        </div>
-        {props.canEdit ? (
-          <div className="kx-head__actions">
-            {busyInstall ? (
-              <button type="button" className="btn danger" disabled={props.cancelling} onClick={() => props.onCancel(k.id)}>
-                {props.cancelling ? "…" : "Отменить установку"}
-              </button>
-            ) : (
+    <>
+      <PageShell
+        section="Парк ПК"
+        title="Киоски"
+        description="Парк Windows-ПК зала: установка софта с Debian-сервера, конфиг, lockdown и экспонаты."
+        wide
+        actions={
+          <div className="kx-page-actions">
+            <button
+              type="button"
+              className="btn ghost"
+              disabled={p.refreshing || Boolean(p.opRunner)}
+              onClick={() => void p.refresh()}
+            >
+              {p.refreshing ? "…" : "Обновить"}
+            </button>
+            <button
+              type="button"
+              className="btn ghost"
+              disabled={p.probingAll || !p.kiosks.length || Boolean(p.opRunner)}
+              onClick={() => void p.probeAll()}
+            >
+              {p.probingAll ? "…" : "Опросить"}
+            </button>
+            {p.canEdit ? (
               <>
                 <button
                   type="button"
-                  className="btn"
-                  disabled={locked || !props.deployReady}
-                  onClick={() => props.onInstall(k.id)}
+                  className="btn secondary"
+                  disabled={
+                    p.bulkUpdating ||
+                    !p.deploy?.packageReady ||
+                    !p.checkedIds.size ||
+                    Boolean(p.opRunner)
+                  }
+                  onClick={() => void p.softwareUpdateBulk("selected")}
                 >
-                  {props.installing ? "…" : "Установить"}
-                </button>
-                <button type="button" className="btn secondary" disabled={locked} onClick={() => props.onStart(k.id)}>
-                  {props.starting || busyUiStart ? "Запуск…" : "Старт UI"}
-                </button>
-                <button type="button" className="btn ghost" disabled={locked} onClick={() => props.onStop(k.id)}>
-                  {props.stopping || busyUiStop ? "Стоп…" : "Стоп"}
+                  {p.bulkUpdating ? "…" : `OTA (${p.checkedIds.size || 0})`}
                 </button>
                 <button
                   type="button"
                   className="btn secondary"
-                  disabled={locked || !props.deployReady}
-                  title={
-                    !props.deployReady
-                      ? "Нет update.zip на сервере"
-                      : swOutdated
-                        ? `Локально ${swLocal} → цель ${swTarget}`
-                        : "Отправить OTA-обновление ПО на этот киоск"
+                  disabled={
+                    p.bulkUpdating ||
+                    !p.deploy?.packageReady ||
+                    !p.stats.online ||
+                    Boolean(p.opRunner)
                   }
-                  onClick={() => props.onSoftwareUpdate(k.id)}
+                  onClick={() => void p.softwareUpdateBulk("online")}
                 >
-                  {props.updatingSoftware ? "…" : "Обновить ПО"}
+                  {p.bulkUpdating ? "…" : "OTA онлайн"}
                 </button>
-              </>
-            )}
-            <button type="button" className="btn ghost" disabled={props.probing} onClick={() => props.onProbe(k.id)}>
-              {props.probing ? "…" : "Опросить"}
-            </button>
-          </div>
-        ) : null}
-      </header>
-
-      <div className="kx-body">
-        <InstallTaskProgress kiosk={k} />
-        <UiStartTaskProgress kiosk={k} />
-        <UiStopTaskProgress kiosk={k} />
-        <PolicyClearTaskProgress kiosk={k} />
-
-        <dl className="kx-meta">
-          <div className="kx-meta__cell">
-            <dt>Heartbeat</dt>
-            <dd>{formatSeen(k.lastSeenAt)}</dd>
-          </div>
-          <div className="kx-meta__cell">
-            <dt>Версия ПО (OTA)</dt>
-            <dd className={swOutdated || swUnknown ? "bad" : undefined}>
-              {swLocal || "—"}
-              {swTarget ? (
-                <span className="muted">
-                  {" "}
-                  → цель {swTarget}
-                  {swOutdated ? " · нужна" : swLocal === swTarget ? " · актуальна" : ""}
-                </span>
-              ) : null}
-            </dd>
-          </div>
-          <div className="kx-meta__cell">
-            <dt>appVersion</dt>
-            <dd>{k.appVersion || "—"}</dd>
-          </div>
-          <div className="kx-meta__cell">
-            <dt>Контент</dt>
-            <dd className="mono">{k.contentVersion || "—"}</dd>
-          </div>
-          <div className="kx-meta__cell">
-            <dt>Синхронизация</dt>
-            <dd className={k.syncStatus === "error" ? "bad" : undefined}>
-              {k.syncStatus}
-              {k.syncMessage ? ` · ${k.syncMessage}` : ""}
-            </dd>
-          </div>
-          <div className="kx-meta__cell">
-            <dt>Health URL</dt>
-            <dd className="mono">
-              http://{k.hostname}:{k.healthPort}/health
-            </dd>
-          </div>
-          <div className="kx-meta__cell">
-            <dt>UI (локально)</dt>
-            <dd className="mono">http://127.0.0.1:{k.uiPort}/</dd>
-          </div>
-        </dl>
-
-        {k.probeMessage ? <p className="kx-probe-msg">{k.probeMessage}</p> : null}
-
-        {props.canEdit ? (
-          <>
-            <section className="kx-section">
-              <h3 className="kx-section__head">Экспонат</h3>
-              <div className="kx-section__body">
-                <label className="kx-field kx-field--grow">
-                  Привязка контента
-                  <select value={k.exhibitId || ""} onChange={(e) => props.onBind(k.id, e.target.value)}>
-                    <option value="">— не привязан —</option>
-                    {props.exhibits.map((e) => (
-                      <option key={e.id} value={e.id}>
-                        {e.title}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              </div>
-            </section>
-
-            <section className="kx-section">
-              <h3 className="kx-section__head">Сеть и kiosk.json</h3>
-              <div className="kx-section__body">
-                <div className="kx-net-grid">
-                  <label className="kx-field">
-                    Health-порт
-                    <input
-                      type="number"
-                      min={1}
-                      max={65535}
-                      value={healthPort}
-                      disabled={locked || props.savingNetwork}
-                      onChange={(e) => setHealthPort(e.target.value)}
-                    />
-                  </label>
-                  <label className="kx-field">
-                    UI-порт
-                    <input
-                      type="number"
-                      min={1}
-                      max={65535}
-                      value={uiPort}
-                      disabled={locked || props.savingNetwork}
-                      onChange={(e) => setUiPort(e.target.value)}
-                    />
-                  </label>
-                  <label className="kx-field wide">
-                    URL сервера Омскэкран
-                    <input
-                      type="url"
-                      value={serverUrl}
-                      placeholder="http://10.176.81.220:8080"
-                      disabled={locked || props.savingNetwork}
-                      onChange={(e) => setServerUrl(e.target.value)}
-                    />
-                  </label>
-                </div>
-                <div className="kx-section__body kx-section__body--row">
+                <div className="kx-more">
                   <button
                     type="button"
                     className="btn ghost"
-                    disabled={locked || props.savingNetwork}
-                    onClick={() =>
-                      props.onSaveNetwork(k.id, {
-                        healthPort: Number(healthPort) || k.healthPort,
-                        uiPort: Number(uiPort) || k.uiPort,
-                        serverUrl,
-                      })
-                    }
+                    aria-expanded={p.moreOpen}
+                    disabled={Boolean(p.opRunner)}
+                    onClick={() => p.setMoreOpen((v) => !v)}
                   >
-                    {props.savingNetwork ? "…" : "Сохранить порты"}
+                    Ещё
                   </button>
-                  <button
-                    type="button"
-                    className="btn ghost"
-                    disabled={locked || props.pushingConfig}
-                    onClick={() => props.onPushConfig(k.id)}
-                  >
-                    {props.pushingConfig ? "…" : "Применить kiosk.json на ПК"}
-                  </button>
-                  <button
-                    type="button"
-                    className="btn ghost"
-                    disabled={locked || props.clearingPolicies || busyPolicyClear}
-                    onClick={() => props.onClearPolicies(k.id)}
-                  >
-                    {props.clearingPolicies || busyPolicyClear ? "Снятие политик…" : "Снять lockdown-политики"}
-                  </button>
-                </div>
-              </div>
-            </section>
-
-            <section className="kx-section kx-remove">
-              <h3 className="kx-section__head">Удаление</h3>
-              <div className="kx-remove__list">
-                <div className="kx-remove__item">
-                  <div className="kx-remove__text">
-                    <strong>Только из админки</strong>
-                    <span>Запись пропадёт из списка. Софт и политики на Windows-ПК не трогаем.</span>
-                  </div>
-                  <button
-                    type="button"
-                    className="btn secondary"
-                    disabled={locked}
-                    onClick={() => props.onRemoveFromAdmin(k.id)}
-                  >
-                    Убрать из списка
-                  </button>
-                </div>
-                <div className="kx-remove__item kx-remove__item--danger">
-                  <div className="kx-remove__text">
-                    <strong>С Windows-ПК</strong>
-                    <span>Снимает Омскэкран с компьютера и удаляет запись из админки.</span>
-                  </div>
-                  <button
-                    type="button"
-                    className="btn danger"
-                    disabled={locked}
-                    onClick={() => props.onRemoveFull(k.id)}
-                  >
-                    Удалить с ПК
-                  </button>
-                </div>
-              </div>
-            </section>
-          </>
-        ) : null}
-      </div>
-    </Card>
-  );
-}
-
-export function KiosksPage() {
-  const { canEdit } = useAuth();
-  const confirmDialog = useConfirm();
-  const [kiosks, setKiosks] = useState<KioskDto[]>([]);
-  const [exhibits, setExhibits] = useState<ExhibitOpt[]>([]);
-  const [deploy, setDeploy] = useState<DeployStatus | null>(null);
-  const [hostname, setHostname] = useState("");
-  const [name, setName] = useState("");
-  const [exhibitId, setExhibitId] = useState("");
-  const [installSoftware, setInstallSoftware] = useState(true);
-  const [showAdd, setShowAdd] = useState(false);
-  const [domainSuffix, setDomainSuffix] = useState("udhb.local");
-  const [testBusy, setTestBusy] = useState(false);
-  const [testHint, setTestHint] = useState("");
-  const [error, setError] = useState("");
-  const [probing, setProbing] = useState<string | null>(null);
-  const [probingAll, setProbingAll] = useState(false);
-  const [installing, setInstalling] = useState<string | null>(null);
-  const [cancelling, setCancelling] = useState<string | null>(null);
-  const [starting, setStarting] = useState<string | null>(null);
-  const [stopping, setStopping] = useState<string | null>(null);
-  const [rollingBack, setRollingBack] = useState(false);
-  const [okHint, setOkHint] = useState("");
-  const [savingNetwork, setSavingNetwork] = useState<string | null>(null);
-  const [pushingConfig, setPushingConfig] = useState<string | null>(null);
-  const [clearingPolicies, setClearingPolicies] = useState<string | null>(null);
-  const [updatingSoftware, setUpdatingSoftware] = useState<string | null>(null);
-  const [bulkUpdating, setBulkUpdating] = useState(false);
-  const [checkedIds, setCheckedIds] = useState<Set<string>>(() => new Set());
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [filter, setFilter] = useState<FilterTab>("all");
-  const [search, setSearch] = useState("");
-  const [refreshing, setRefreshing] = useState(false);
-
-  async function loadExhibits() {
-    setExhibits(await api<ExhibitOpt[]>("/api/exhibits?fields=id,title"));
-  }
-
-  async function load(preferredId?: string | null) {
-    const [k, d] = await Promise.all([
-      api<KioskDto[]>("/api/kiosks"),
-      api<DeployStatus>("/api/kiosks/deploy/status"),
-    ]);
-    setKiosks(k);
-    setDeploy(d);
-    if (d.domainSuffix) setDomainSuffix(d.domainSuffix);
-    setSelectedId((cur) => {
-      const want = preferredId === undefined ? cur : preferredId;
-      if (want && k.some((x) => x.id === want)) return want;
-      return k[0]?.id ?? null;
-    });
-  }
-
-  useEffect(() => {
-    Promise.all([load(), loadExhibits()]).catch((e) => setError(e.message));
-  }, []);
-
-  const installingNow = useMemo(
-    () => kiosks.some((k) => k.installStatus === "running" || k.installStatus === "queued"),
-    [kiosks]
-  );
-
-  const policyClearNow = useMemo(
-    () => kiosks.some((k) => k.policyClearStatus === "running"),
-    [kiosks]
-  );
-
-  const uiStartNow = useMemo(() => kiosks.some((k) => k.uiStartStatus === "running"), [kiosks]);
-
-  const uiStopNow = useMemo(() => kiosks.some((k) => k.uiStopStatus === "running"), [kiosks]);
-
-  useEffect(() => {
-    const busy = installingNow || policyClearNow || uiStartNow || uiStopNow;
-    const ms = busy ? 2500 : 10000;
-    const t = setInterval(() => {
-      load().catch(() => undefined);
-    }, ms);
-    return () => clearInterval(t);
-  }, [installingNow, policyClearNow, uiStartNow, uiStopNow]);
-
-  const stats = useMemo(() => {
-    const online = kiosks.filter((k) => k.online).length;
-    const healthy = kiosks.filter((k) => k.probeStatus === "healthy").length;
-    const installingCount = kiosks.filter(
-      (k) => k.installStatus === "running" || k.installStatus === "queued"
-    ).length;
-    const problems = kiosks.filter((k) => kioskHasProblem(k)).length;
-    return { online, healthy, installingCount, problems, total: kiosks.length };
-  }, [kiosks]);
-
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return kiosks
-      .filter((k) => {
-        if (filter === "online") return k.online;
-        if (filter === "problems") return kioskHasProblem(k);
-        if (filter === "installing")
-          return k.installStatus === "running" || k.installStatus === "queued";
-        return true;
-      })
-      .filter((k) => {
-        if (!q) return true;
-        return k.name.toLowerCase().includes(q) || k.hostname.toLowerCase().includes(q);
-      })
-      .sort((a, b) => a.name.localeCompare(b.name, "ru"));
-  }, [kiosks, filter, search]);
-
-  const selected = useMemo(
-    () => kiosks.find((k) => k.id === selectedId) ?? null,
-    [kiosks, selectedId]
-  );
-
-  async function refresh() {
-    setRefreshing(true);
-    try {
-      await load();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Ошибка обновления");
-    } finally {
-      setRefreshing(false);
-    }
-  }
-
-  async function probeAll() {
-    if (!kiosks.length) return;
-    setProbingAll(true);
-    setError("");
-    try {
-      for (const k of kiosks) {
-        await api(`/api/kiosks/${k.id}/probe`, { method: "POST" });
-      }
-      await load();
-      setOkHint(`Опрос выполнен для ${kiosks.length} киосков`);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Ошибка опроса");
-    } finally {
-      setProbingAll(false);
-    }
-  }
-
-  async function rollbackAll() {
-    if (kiosks.length === 0) {
-      const ok = await confirmDialog({
-        title: "Сбросить настройки?",
-        message: "Будут сброшены флаги «Софт киосков» и «Блокировка клавиатуры».",
-        confirmLabel: "Сбросить",
-        tone: "warn",
-      });
-      if (!ok) return;
-      setRollingBack(true);
-      try {
-        const res = await api<{ message: string }>("/api/kiosks/rollback-all", {
-          method: "POST",
-          json: { removeFromAdmin: false },
-        });
-        setOkHint(res.message);
-        await load();
-      } catch (e) {
-        setError(e instanceof Error ? e.message : "Откат не выполнен");
-      } finally {
-        setRollingBack(false);
-      }
-      return;
-    }
-    const ok = await confirmDialog({
-      title: "Откатить все киоски?",
-      message: "На каждом Windows-ПК будет выполнено удаление Омскэкран и снятие политик.",
-      details: "В настройках сбросятся флаги софта и клавиатуры.",
-      confirmLabel: "Откатить все",
-      tone: "danger",
-    });
-    if (!ok) return;
-    const removeRows = await confirmDialog({
-      title: "Удалить из списка?",
-      message: "Также удалить записи киосков из админки?",
-      details: "Если отменить — ПК останутся в списке для повторной установки.",
-      confirmLabel: "Удалить записи",
-      cancelLabel: "Оставить в списке",
-      tone: "warn",
-    });
-    setRollingBack(true);
-    try {
-      const res = await api<{
-        ok: boolean;
-        message: string;
-        failCount: number;
-        results: Array<{ hostname: string; ok: boolean; message: string }>;
-      }>("/api/kiosks/rollback-all", {
-        method: "POST",
-        json: { removeFromAdmin: removeRows },
-      });
-      if (res.failCount) {
-        const fails = res.results
-          .filter((r) => !r.ok)
-          .map((r) => `${r.hostname}: ${r.message}`)
-          .join("\n");
-        setError(`${res.message}\n${fails}`);
-      } else {
-        setOkHint(res.message);
-      }
-      await load();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Откат не выполнен");
-    } finally {
-      setRollingBack(false);
-    }
-  }
-
-  async function onTestWinRm() {
-    const host = hostname.trim();
-    if (!host) {
-      setError("Укажите имя Windows-ПК");
-      return;
-    }
-    setTestBusy(true);
-    setError("");
-    setTestHint("");
-    try {
-      const res = await api<{
-        ok: boolean;
-        hostname: string;
-        message: string;
-        detail?: string;
-      }>("/api/kiosks/test-connection", {
-        method: "POST",
-        json: { hostname: host },
-      });
-      const text = res.detail ? `${res.message} — ${res.detail}` : res.message;
-      if (res.ok) {
-        setTestHint(`${text} · будет добавлен как ${res.hostname}`);
-        setHostname(res.hostname);
-      } else {
-        setError(text);
-      }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Проверка WinRM не удалась");
-    } finally {
-      setTestBusy(false);
-    }
-  }
-
-  async function onCreate(ev: FormEvent) {
-    ev.preventDefault();
-    try {
-      if (installSoftware && deploy && !deploy.packageReady) {
-        setError("Сначала на Debian: pnpm pack:kiosk-deploy");
-        return;
-      }
-      const host = hostname.trim();
-      const created = await api<KioskDto>("/api/kiosks", {
-        method: "POST",
-        json: {
-          hostname: host,
-          name: name.trim() || undefined,
-          exhibitId: exhibitId || null,
-          installSoftware,
-        },
-      });
-      setHostname("");
-      setName("");
-      setExhibitId("");
-      setTestHint("");
-      setShowAdd(false);
-      await load();
-      setSelectedId(created.id);
-      setOkHint(`Киоск ${created.hostname} добавлен${installSoftware ? " · установка по WinRM…" : ""}`);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Ошибка");
-    }
-  }
-
-  async function bind(id: string, nextExhibitId: string) {
-    try {
-      await api(`/api/kiosks/${id}`, { method: "PATCH", json: { exhibitId: nextExhibitId || null } });
-      await load();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Ошибка");
-    }
-  }
-
-  async function probe(id: string) {
-    setProbing(id);
-    try {
-      await api(`/api/kiosks/${id}/probe`, { method: "POST" });
-      await load();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Ошибка опроса");
-    } finally {
-      setProbing(null);
-    }
-  }
-
-  async function install(id: string) {
-    setInstalling(id);
-    setError("");
-    try {
-      if (deploy && !deploy.packageReady) throw new Error("Пакет не готов");
-      await api(`/api/kiosks/${id}/install`, { method: "POST" });
-      setSelectedId(id);
-      await load();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Ошибка установки");
-    } finally {
-      setInstalling(null);
-    }
-  }
-
-  async function cancelInstall(id: string) {
-    setCancelling(id);
-    try {
-      await api(`/api/kiosks/${id}/install/cancel`, { method: "POST" });
-      await load();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Не удалось отменить");
-    } finally {
-      setCancelling(null);
-    }
-  }
-
-  async function startKiosk(id: string) {
-    setStarting(id);
-    setError("");
-    try {
-      const res = await api<{ message: string; alreadyRunning?: boolean; kiosk: KioskDto }>(
-        `/api/kiosks/${id}/start`,
-        { method: "POST" }
-      );
-      setKiosks((prev) => prev.map((k) => (k.id === id ? res.kiosk : k)));
-      setSelectedId(id);
-      setOkHint(
-        res.alreadyRunning ? "Запуск UI уже выполняется — смотрите прогресс" : res.message
-      );
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Не удалось запустить");
-    } finally {
-      setStarting(null);
-    }
-  }
-
-  async function stopKiosk(id: string) {
-    const ok = await confirmDialog({
-      title: "Выключить киоск?",
-      message: "Агент и Edge UI на этом Windows-ПК будут остановлены.",
-      confirmLabel: "Выключить",
-      tone: "warn",
-    });
-    if (!ok) return;
-    setStopping(id);
-    setError("");
-    try {
-      const res = await api<{ message: string; alreadyRunning?: boolean; kiosk: KioskDto }>(
-        `/api/kiosks/${id}/stop`,
-        { method: "POST" }
-      );
-      setKiosks((prev) => prev.map((k) => (k.id === id ? res.kiosk : k)));
-      setSelectedId(id);
-      setOkHint(
-        res.alreadyRunning ? "Остановка уже выполняется — смотрите прогресс" : res.message
-      );
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Не удалось выключить");
-    } finally {
-      setStopping(null);
-    }
-  }
-
-  async function saveNetwork(id: string, data: { healthPort: number; uiPort: number; serverUrl: string }) {
-    setSavingNetwork(id);
-    try {
-      await api(`/api/kiosks/${id}`, {
-        method: "PATCH",
-        json: {
-          healthPort: data.healthPort,
-          uiPort: data.uiPort,
-          serverUrl: data.serverUrl.trim() || null,
-        },
-      });
-      setOkHint("Порты сохранены");
-      await load();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Не удалось сохранить");
-    } finally {
-      setSavingNetwork(null);
-    }
-  }
-
-  async function pushConfig(id: string) {
-    setPushingConfig(id);
-    try {
-      const res = await api<{ message: string }>(`/api/kiosks/${id}/push-config`, { method: "POST" });
-      setOkHint(res.message);
-      await load();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Не удалось применить конфиг");
-    } finally {
-      setPushingConfig(null);
-    }
-  }
-
-  async function clearPolicies(id: string) {
-    const ok = await confirmDialog({
-      title: "Снять политики lockdown?",
-      message: "Lockdown-политики будут сняты на этом Windows-ПК.",
-      details: "Софт киоска не удаляется.",
-      confirmLabel: "Снять политики",
-      tone: "warn",
-    });
-    if (!ok) return;
-    setClearingPolicies(id);
-    setError("");
-    try {
-      const res = await api<{ message: string; alreadyRunning?: boolean; kiosk: KioskDto }>(
-        `/api/kiosks/${id}/clear-policies`,
-        { method: "POST" }
-      );
-      setKiosks((prev) => prev.map((k) => (k.id === id ? res.kiosk : k)));
-      setSelectedId(id);
-      setOkHint(
-        res.alreadyRunning ? "Снятие политик уже выполняется — смотрите прогресс" : res.message
-      );
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Не удалось снять политики");
-    } finally {
-      setClearingPolicies(null);
-    }
-  }
-
-  function toggleChecked(id: string, on: boolean) {
-    setCheckedIds((prev) => {
-      const next = new Set(prev);
-      if (on) next.add(id);
-      else next.delete(id);
-      return next;
-    });
-  }
-
-  function toggleCheckAllFiltered(on: boolean) {
-    setCheckedIds((prev) => {
-      const next = new Set(prev);
-      for (const k of filtered) {
-        if (on) next.add(k.id);
-        else next.delete(k.id);
-      }
-      return next;
-    });
-  }
-
-  async function softwareUpdateOne(id: string) {
-    const k = kiosks.find((x) => x.id === id);
-    const target = deploy?.softwareVersion || "пакет";
-    const ok = await confirmDialog({
-      title: "Обновить ПО на киоске?",
-      message: `Отправить OTA «${k?.name || k?.hostname || id}» → ${target}.`,
-      details:
-        "Агент скачает update.zip с сервера. Если WinRM недоступен — киоск подхватит обновление по heartbeat (~30 с).",
-      confirmLabel: "Обновить ПО",
-      tone: "warn",
-    });
-    if (!ok) return;
-    setUpdatingSoftware(id);
-    setError("");
-    try {
-      const res = await api<{
-        ok: boolean;
-        mode: string;
-        message: string;
-        targetSoftwareVersion: string | null;
-      }>(`/api/kiosks/${id}/software-update`, { method: "POST" });
-      setSelectedId(id);
-      setOkHint(
-        res.message ||
-          `OTA запущена → ${res.targetSoftwareVersion || target}. Версия в карточке обновится после применения (~30–60 с).`
-      );
-      await load(id);
-      // Heartbeat may still show old softwareVersion for a bit — re-poll.
-      for (const delayMs of [5_000, 15_000, 35_000]) {
-        window.setTimeout(() => {
-          void api(`/api/kiosks/${id}/probe`, { method: "POST" })
-            .catch(() => null)
-            .then(() => load(id));
-        }, delayMs);
-      }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Не удалось отправить обновление");
-    } finally {
-      setUpdatingSoftware(null);
-    }
-  }
-
-  async function softwareUpdateBulk(mode: "selected" | "online") {
-    const ids =
-      mode === "selected"
-        ? [...checkedIds]
-        : kiosks.filter((k) => k.online).map((k) => k.id);
-    if (!ids.length) {
-      setError(mode === "selected" ? "Отметьте киоски слева" : "Нет онлайн-киосков");
-      return;
-    }
-    const target = deploy?.softwareVersion || "пакет";
-    const ok = await confirmDialog({
-      title: mode === "selected" ? "Обновить выбранные?" : "Обновить все онлайн?",
-      message: `OTA на ${ids.length} киоск(ов) → ${target}.`,
-      details: "Сервер пометит киоски на принудительное обновление; агент скачает update.zip.",
-      confirmLabel: "Обновить ПО",
-      tone: "warn",
-    });
-    if (!ok) return;
-    setBulkUpdating(true);
-    setError("");
-    try {
-      const res = await api<{
-        targetSoftwareVersion: string | null;
-        results: Array<{ hostname: string; ok: boolean; mode: string; message: string }>;
-      }>("/api/kiosks/software-update", {
-        method: "POST",
-        json: { ids },
-      });
-      const okN = res.results.filter((r) => r.ok).length;
-      const fails = res.results.filter((r) => !r.ok);
-      setOkHint(
-        `ПО → ${res.targetSoftwareVersion || target}: ${okN}/${res.results.length}` +
-          (fails.length
-            ? ` · ошибки: ${fails.map((f) => `${f.hostname} (${f.message})`).join("; ")}`
-            : "")
-      );
-      if (mode === "selected") setCheckedIds(new Set());
-      await load();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Массовое обновление не удалось");
-    } finally {
-      setBulkUpdating(false);
-    }
-  }
-
-  function nextSelectedAfterDelete(removedId: string, list: KioskDto[]) {
-    const idx = list.findIndex((k) => k.id === removedId);
-    if (idx === -1) return list[0]?.id ?? null;
-    return list[idx + 1]?.id ?? list[idx - 1]?.id ?? null;
-  }
-
-  async function deleteKioskFromAdmin(id: string) {
-    setError("");
-    const res = await api<{ message: string }>(`/api/kiosks/${id}?purge=0`, { method: "DELETE" });
-    const nextId = nextSelectedAfterDelete(id, kiosks.filter((x) => x.id !== id));
-    await load(nextId);
-    setOkHint(res.message || "Киоск убран из списка");
-  }
-
-  async function removeFromAdmin(id: string) {
-    const k = kiosks.find((x) => x.id === id);
-    const ok = await confirmDialog({
-      title: "Убрать из списка?",
-      message: `Киоск «${k?.name || "без названия"}» будет удалён только из админки.`,
-      details: "Софт на Windows-ПК останется без изменений.",
-      confirmLabel: "Убрать",
-      tone: "warn",
-    });
-    if (!ok) return;
-    try {
-      await deleteKioskFromAdmin(id);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Не удалось удалить");
-    }
-  }
-
-  async function removeFull(id: string) {
-    const k = kiosks.find((x) => x.id === id);
-    const ok = await confirmDialog({
-      title: "Удалить киоск с ПК?",
-      message: `«${k?.name || "Киоск"}» будет удалён с Windows-ПК и из админки.`,
-      details: "Будет выполнено удаление софта Омскэкран на компьютере.",
-      confirmLabel: "Удалить",
-      tone: "danger",
-    });
-    if (!ok) return;
-    setError("");
-    try {
-      const res = await api<{ message: string }>(`/api/kiosks/${id}`, { method: "DELETE" });
-      const nextId = nextSelectedAfterDelete(id, kiosks.filter((x) => x.id !== id));
-      await load(nextId);
-      setOkHint(res.message || "Киоск удалён");
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : "Не удалось удалить";
-      const fallback = await confirmDialog({
-        title: "Не удалось удалить с ПК",
-        message: msg,
-        details: "Удалить только запись из админки, без снятия софта с Windows-ПК?",
-        confirmLabel: "Только из списка",
-        tone: "warn",
-      });
-      if (fallback) {
-        try {
-          await deleteKioskFromAdmin(id);
-        } catch (e2) {
-          setError(e2 instanceof Error ? e2.message : "Не удалось удалить");
-        }
-      } else {
-        setError(msg);
-      }
-    }
-  }
-
-  const filterTabs: { id: FilterTab; label: string; count: number }[] = [
-    { id: "all", label: "Все", count: stats.total },
-    { id: "online", label: "Онлайн", count: stats.online },
-    { id: "problems", label: "Проблемы", count: stats.problems },
-    { id: "installing", label: "Установка", count: stats.installingCount },
-  ];
-
-  return (
-    <PageShell
-      section="Парк ПК"
-      title="Киоски"
-      description="Парк Windows-ПК зала: установка софта с Debian-сервера, конфиг, lockdown и экспонаты."
-      wide
-      actions={
-        <>
-          <button type="button" className="btn ghost" disabled={refreshing} onClick={() => void refresh()}>
-            {refreshing ? "…" : "Обновить"}
-          </button>
-          <button type="button" className="btn ghost" disabled={probingAll || !kiosks.length} onClick={() => void probeAll()}>
-            {probingAll ? "…" : "Опросить все"}
-          </button>
-          {canEdit && (
-            <>
-              <button
-                type="button"
-                className="btn secondary"
-                disabled={bulkUpdating || !deploy?.packageReady || !checkedIds.size}
-                onClick={() => void softwareUpdateBulk("selected")}
-              >
-                {bulkUpdating ? "…" : `Обновить ПО (${checkedIds.size || "выбор"})`}
-              </button>
-              <button
-                type="button"
-                className="btn secondary"
-                disabled={bulkUpdating || !deploy?.packageReady || !stats.online}
-                onClick={() => void softwareUpdateBulk("online")}
-              >
-                {bulkUpdating ? "…" : "Обновить ПО (онлайн)"}
-              </button>
-              <button type="button" className="btn danger" disabled={rollingBack} onClick={() => void rollbackAll()}>
-                {rollingBack ? "Откат…" : "Откатить все"}
-              </button>
-            </>
-          )}
-        </>
-      }
-      banner={
-        <>
-          {okHint ? (
-            <Alert tone="success" onDismiss={() => setOkHint("")}>
-              {okHint}
-            </Alert>
-          ) : null}
-          {error ? (
-            <Alert tone="error" onDismiss={() => setError("")}>
-              {error}
-            </Alert>
-          ) : null}
-          {deploy ? <DeployStatusPanel deploy={deploy} /> : null}
-        </>
-      }
-    >
-      <StatGrid columns={5}>
-        <Stat label="Всего" value={stats.total} />
-        <Stat label="Healthy" value={stats.healthy} tone="ok" />
-        <Stat label="Онлайн" value={stats.online} tone="ok" />
-        <Stat label="Установка" value={stats.installingCount} tone={stats.installingCount ? "warn" : "default"} />
-        <Stat label="Проблемы" value={stats.problems} tone={stats.problems ? "bad" : "default"} />
-      </StatGrid>
-
-      <div className="kx-workspace">
-        <aside className="kx-list">
-          <div className="kx-list__toolbar">
-            <input
-              type="search"
-              className="kx-list__search"
-              placeholder="Поиск по имени или hostname…"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-            />
-            <div className="kx-filters" role="tablist">
-              {filterTabs.map((tab) => (
-                <button
-                  key={tab.id}
-                  type="button"
-                  role="tab"
-                  aria-selected={filter === tab.id}
-                  className={`kx-filter ${filter === tab.id ? "is-active" : ""}`}
-                  onClick={() => setFilter(tab.id)}
-                >
-                  {tab.label}
-                  <span className="kx-filter__n">{tab.count}</span>
-                </button>
-              ))}
-            </div>
-            {canEdit ? (
-              <>
-                <button
-                  type="button"
-                  className={`btn secondary kx-add-toggle ${showAdd ? "is-active" : ""}`}
-                  onClick={() => setShowAdd((v) => !v)}
-                >
-                  {showAdd ? "Скрыть форму" : "+ Добавить киоск"}
-                </button>
-                {showAdd ? (
-                  <Card title="Новый киоск (домен / WinRM)">
-                    <form className="kx-add-form" onSubmit={onCreate}>
-                      <label>
-                        Имя Windows-ПК
-                        <input
-                          required
-                          value={hostname}
-                          onChange={(e) => {
-                            setHostname(e.target.value);
-                            setTestHint("");
-                          }}
-                          placeholder={`itpc07 или itpc07.${domainSuffix}`}
-                          autoComplete="off"
-                        />
-                      </label>
-                      <p className="cx-setting__hint" style={{ margin: 0 }}>
-                        Короткое имя дополнится до <code>*.{domainSuffix}</code>. Подключение с
-                        Debian по WinRM (без SSH на ПК). Учётку задайте в Настройки → Windows.
-                      </p>
-                      <label>
-                        Название в админке
-                        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Стелла · зал 1" />
-                      </label>
-                      <label>
-                        Экспонат
-                        <select value={exhibitId} onChange={(e) => setExhibitId(e.target.value)}>
-                          <option value="">— не привязан —</option>
-                          {exhibits.map((e) => (
-                            <option key={e.id} value={e.id}>
-                              {e.title}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label className="checkbox-label">
-                        <input
-                          type="checkbox"
-                          checked={installSoftware}
-                          onChange={(e) => setInstallSoftware(e.target.checked)}
-                        />
-                        Сразу установить софт по WinRM
-                      </label>
-                      {testHint ? <Alert tone="success">{testHint}</Alert> : null}
-                      <div className="kx-add-actions" style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
-                        <button
-                          type="button"
-                          className="btn secondary"
-                          disabled={testBusy || !hostname.trim()}
-                          onClick={() => void onTestWinRm()}
-                        >
-                          {testBusy ? "Проверка…" : "Проверить WinRM"}
-                        </button>
-                        <button className="btn" disabled={installSoftware && !!deploy && !deploy.packageReady}>
-                          Добавить
-                        </button>
-                      </div>
-                    </form>
-                  </Card>
-                ) : null}
-              </>
-            ) : null}
-          </div>
-
-          <div className="kx-items">
-            {canEdit && filtered.length ? (
-              <label className="kx-select-all checkbox-label">
-                <input
-                  type="checkbox"
-                  checked={filtered.every((k) => checkedIds.has(k.id))}
-                  onChange={(e) => toggleCheckAllFiltered(e.target.checked)}
-                />
-                Выбрать все в списке ({filtered.length})
-              </label>
-            ) : null}
-            {filtered.map((k) => {
-              const busy = kioskBusyLabel(k);
-              const outdated =
-                deploy?.softwareVersion &&
-                k.softwareVersion &&
-                k.softwareVersion !== deploy.softwareVersion;
-              return (
-                <div
-                  key={k.id}
-                  className={`kx-item ${selectedId === k.id ? "is-selected" : ""} ${busy ? "is-busy" : ""}`}
-                >
-                  {canEdit ? (
-                    <input
-                      type="checkbox"
-                      className="kx-item__check"
-                      checked={checkedIds.has(k.id)}
-                      aria-label={`Выбрать ${k.name}`}
-                      onChange={(e) => toggleChecked(k.id, e.target.checked)}
-                    />
-                  ) : null}
-                  <button type="button" className="kx-item__btn" onClick={() => setSelectedId(k.id)}>
-                    <div className="kx-item__row">
-                      <div>
-                        <span className="kx-item__name">{k.name}</span>
-                        <span className="kx-item__host">{k.hostname}</span>
-                      </div>
-                      <span className={`kx-item__dot ${kioskDotClass(k)}`} title={PROBE_STATUS_LABEL[k.probeStatus]} />
-                    </div>
-                    <div className="kx-item__foot">
-                      <span className={`kx-item__tag ${k.online ? "is-live" : ""}`}>
-                        {k.online ? "онлайн" : "офлайн"}
-                      </span>
-                      <span
-                        className={`kx-item__tag ${
-                          k.probeStatus === "healthy"
-                            ? "is-live"
-                            : k.probeStatus === "unreachable" || k.probeStatus === "no_software"
-                              ? "is-bad"
-                              : ""
-                        }`}
+                  {p.moreOpen ? (
+                    <div className="kx-more__menu" role="menu">
+                      <button
+                        type="button"
+                        className="btn danger"
+                        disabled={p.rollingBack || Boolean(p.opRunner)}
+                        onClick={() => void p.rollbackAll()}
                       >
-                        {PROBE_STATUS_LABEL[k.probeStatus]}
-                      </span>
-                      {k.softwareVersion ? (
-                        <span className={`kx-item__tag ${outdated ? "is-bad" : ""}`} title="Версия ПО (OTA)">
-                          {k.softwareVersion}
-                        </span>
-                      ) : null}
-                      {busy ? <span className="kx-item__tag is-busy">{busy}</span> : null}
-                      {k.exhibitTitle ? <span className="kx-item__tag">{k.exhibitTitle}</span> : null}
+                        {p.rollingBack ? "Откат…" : "Откатить все"}
+                      </button>
                     </div>
-                  </button>
+                  ) : null}
                 </div>
-              );
-            })}
-            {!filtered.length ? (
-            <div className="cx-empty">
-              <p className="cx-empty__title">{kiosks.length ? "Ничего не найдено" : "Киосков пока нет"}</p>
-                <p className="muted">
-                  {kiosks.length ? "Измените фильтр или поиск." : canEdit ? "Нажмите «Добавить киоск»." : "Список пуст."}
-                </p>
-              </div>
+              </>
             ) : null}
           </div>
-        </aside>
-
-        {selected ? (
-          <KioskDetailPanel
-            kiosk={selected}
-            exhibits={exhibits}
-            canEdit={canEdit}
-            deployReady={!!deploy?.packageReady}
-            probing={probing === selected.id}
-            installing={installing === selected.id}
-            cancelling={cancelling === selected.id}
-            starting={starting === selected.id}
-            stopping={stopping === selected.id}
-            savingNetwork={savingNetwork === selected.id}
-            pushingConfig={pushingConfig === selected.id}
-            clearingPolicies={clearingPolicies === selected.id}
-            updatingSoftware={updatingSoftware === selected.id}
-            targetSoftwareVersion={deploy?.softwareVersion ?? null}
-            onBind={bind}
-            onProbe={probe}
-            onInstall={install}
-            onCancel={cancelInstall}
-            onStart={startKiosk}
-            onStop={stopKiosk}
-            onSoftwareUpdate={softwareUpdateOne}
-            onRemoveFromAdmin={removeFromAdmin}
-            onRemoveFull={removeFull}
-            onSaveNetwork={saveNetwork}
-            onPushConfig={pushConfig}
-            onClearPolicies={clearPolicies}
+        }
+        banner={
+          <>
+            {p.okHint ? (
+              <Alert tone="success" onDismiss={() => p.setOkHint("")}>
+                {p.okHint}
+              </Alert>
+            ) : null}
+            {p.error ? (
+              <Alert tone="error" onDismiss={() => p.setError("")}>
+                {p.error}
+              </Alert>
+            ) : null}
+            <KioskFleetJobsBanner jobs={p.fleetJobs} />
+            {p.deploy ? <DeployStatusPanel deploy={p.deploy} /> : null}
+          </>
+        }
+      >
+        <StatGrid columns={5}>
+          <Stat label="Всего" value={p.stats.total} />
+          <Stat label="Healthy" value={p.stats.healthy} tone="ok" />
+          <Stat label="Онлайн" value={p.stats.online} tone="ok" />
+          <Stat
+            label="Установка"
+            value={p.stats.installingCount}
+            tone={p.stats.installingCount ? "warn" : "default"}
           />
-        ) : (
-          <div className="kx-panel__empty">
-            <div className="kx-panel__empty-icon" aria-hidden>
-              🖥
+          <Stat
+            label="Проблемы"
+            value={p.stats.problems}
+            tone={p.stats.problems ? "bad" : "default"}
+          />
+        </StatGrid>
+
+        <div className="kx-workspace">
+          <KioskList
+            filtered={p.filtered}
+            totalCount={p.kiosks.length}
+            canEdit={p.canEdit}
+            selectedId={p.selectedId}
+            filter={p.filter}
+            filterTabs={p.filterTabs}
+            search={p.search}
+            onSearch={p.setSearch}
+            onFilter={p.setFilter}
+            checkedIds={p.checkedIds}
+            onToggleChecked={p.toggleChecked}
+            onToggleCheckAll={p.toggleCheckAllFiltered}
+            onSelect={p.selectKiosk}
+            deploySoftwareVersion={p.deploy?.softwareVersion ?? null}
+            otaWaiting={p.otaWaiting}
+            addSlot={
+              p.canEdit ? (
+                <KioskAddForm
+                  open={p.showAdd}
+                  onToggle={() => p.setShowAdd((v) => !v)}
+                  hostname={p.hostname}
+                  onHostname={p.setHostname}
+                  name={p.name}
+                  onName={p.setName}
+                  exhibitId={p.exhibitId}
+                  onExhibitId={p.setExhibitId}
+                  exhibits={p.exhibits}
+                  installSoftware={p.installSoftware}
+                  onInstallSoftware={p.setInstallSoftware}
+                  domainSuffix={p.domainSuffix}
+                  packageReady={!!p.deploy?.packageReady}
+                  testBusy={p.testBusy}
+                  creating={p.creating}
+                  testHint={p.testHint}
+                  onClearTestHint={() => p.setTestHint("")}
+                  onTestWinRm={() => void p.onTestWinRm()}
+                  onSubmit={(ev) => void p.onCreate(ev)}
+                />
+              ) : null
+            }
+          />
+
+          {p.selected ? (
+            <KioskDetail
+              kiosk={p.selected}
+              exhibits={p.exhibits}
+              canEdit={p.canEdit}
+              deployReady={!!p.deploy?.packageReady}
+              probing={p.probing === p.selected.id}
+              installing={p.installing === p.selected.id}
+              cancelling={p.cancelling === p.selected.id}
+              starting={p.starting === p.selected.id}
+              stopping={p.stopping === p.selected.id}
+              savingNetwork={p.savingNetwork === p.selected.id}
+              pushingConfig={p.pushingConfig === p.selected.id}
+              clearingPolicies={p.clearingPolicies === p.selected.id}
+              updatingSoftware={p.updatingSoftware === p.selected.id}
+              binding={p.binding === p.selected.id}
+              removingAdmin={p.removingAdmin === p.selected.id}
+              removingFull={p.removingFull === p.selected.id}
+              otaPending={Boolean(p.selected.otaPending || p.otaWaiting[p.selected.id])}
+              targetSoftwareVersion={p.selected.otaTarget || p.deploy?.softwareVersion || null}
+              hiddenByFilter={p.selectedHiddenByFilter}
+              onBind={p.bind}
+              onProbe={p.probe}
+              onInstall={p.install}
+              onCancel={p.cancelInstall}
+              onStart={p.startKiosk}
+              onStop={p.stopKiosk}
+              onSoftwareUpdate={p.softwareUpdateOne}
+              onRemoveFromAdmin={p.removeFromAdmin}
+              onRemoveFull={p.removeFull}
+              onSaveNetwork={p.saveNetwork}
+              onPushConfig={p.pushConfig}
+              onClearPolicies={p.clearPolicies}
+            />
+          ) : (
+            <div className="kx-panel__empty">
+              <p className="cx-empty__title">Выберите киоск слева</p>
+              <p className="muted">Управление, OTA, сеть и удаление появятся здесь.</p>
             </div>
-            <p className="cx-empty__title">Выберите киоск слева</p>
-            <p className="muted">Здесь появятся управление, прогресс установки и настройки сети.</p>
-          </div>
-        )}
-      </div>
-    </PageShell>
+          )}
+        </div>
+      </PageShell>
+      <KioskOpRunner op={p.opRunner} />
+    </>
   );
 }

@@ -44,6 +44,40 @@ function parseOk(text: string) {
   );
 }
 
+/** Instant OTA: POST to agent health /force-update on the LAN (no WinRM). */
+async function signalForceUpdateViaHttp(
+  hostname: string,
+  healthPort: number,
+  target: string
+): Promise<{ ok: boolean; message: string }> {
+  const port = Number(healthPort) || 47821;
+  const url = `http://${hostname}:${port}/force-update`;
+  try {
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), 4_000);
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ softwareVersion: target }),
+      signal: ac.signal,
+    });
+    clearTimeout(timer);
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      return { ok: false, message: `HTTP ${res.status} ${text.slice(0, 120)}` };
+    }
+    const body = (await res.json().catch(() => null)) as { ok?: boolean; target?: string } | null;
+    if (body?.ok === false) {
+      return { ok: false, message: "агент отклонил /force-update" };
+    }
+    console.log(`[software-update] ${hostname}: HTTP force-update OK → ${target}`);
+    return { ok: true, message: `HTTP /force-update → ${target}` };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { ok: false, message: msg };
+  }
+}
+
 async function signalForceUpdateViaWinRm(
   id: string,
   hostname: string,
@@ -75,7 +109,7 @@ async function signalForceUpdateViaWinRm(
     if (/FORCE_OK/i.test(text)) {
       const msg = parseOk(text);
       console.log(`[software-update] ${hostname}: ${msg}`);
-      await probeKioskById(id).catch(() => null);
+      void probeKioskById(id).catch(() => null);
       return { ok: true, message: msg };
     }
     const detail = summarizeDeployOutput(text, result.code);
@@ -95,7 +129,7 @@ export async function requestKioskSoftwareUpdate(
   opts?: { force?: boolean; waitWinRm?: boolean }
 ): Promise<SoftwareUpdateResult> {
   const force = opts?.force !== false;
-  const waitWinRm = opts?.waitWinRm !== false; // default: wait so kiosk starts immediately
+  const waitWinRm = opts?.waitWinRm !== false;
   const meta = getDeployMeta();
   const target = meta.softwareVersion && meta.softwareVersion !== "0" ? meta.softwareVersion : null;
   const hasZip = Boolean(meta.updateZipPath || meta.packageZipPath);
@@ -148,6 +182,22 @@ export async function requestKioskSoftwareUpdate(
 
   const transportErr = deployTransportError();
 
+  // 1) Instant path: agent health HTTP (same LAN) — starts download immediately
+  const httpSignal = await signalForceUpdateViaHttp(kiosk.hostname, kiosk.healthPort, target);
+  if (httpSignal.ok) {
+    // Also drop FORCE_UPDATE via WinRM in background (redundant, helps if HTTP apply fails mid-way)
+    void signalForceUpdateViaWinRm(id, kiosk.hostname, target);
+    return {
+      ok: true,
+      mode: "signaled",
+      message: `OTA → ${target}: киоск начал обновление сразу (${httpSignal.message})`,
+      targetSoftwareVersion: target,
+      localSoftwareVersion: local,
+      kiosk: dto,
+    };
+  }
+
+  // 2) Fallback: WinRM writes FORCE_UPDATE
   if (waitWinRm) {
     const signal = await signalForceUpdateViaWinRm(id, kiosk.hostname, target);
     if (signal.ok) {
@@ -163,7 +213,7 @@ export async function requestKioskSoftwareUpdate(
     return {
       ok: true,
       mode: "pending",
-      message: `OTA → ${target}: ждём агент по heartbeat (~30 с). WinRM: ${signal.message}`,
+      message: `OTA → ${target}: ждём агент по heartbeat. HTTP: ${httpSignal.message}; WinRM: ${signal.message}`,
       targetSoftwareVersion: target,
       localSoftwareVersion: local,
       kiosk: dto,
@@ -175,8 +225,8 @@ export async function requestKioskSoftwareUpdate(
     ok: true,
     mode: "pending",
     message: transportErr
-      ? `OTA → ${target}: ждём агент (~30 с). WinRM: ${transportErr}`
-      : `OTA → ${target}: сигнал уходит, киоск обновится сразу после WinRM / heartbeat`,
+      ? `OTA → ${target}: ждём агент. HTTP: ${httpSignal.message}; WinRM: ${transportErr}`
+      : `OTA → ${target}: HTTP недоступен (${httpSignal.message}), уходит WinRM…`,
     targetSoftwareVersion: target,
     localSoftwareVersion: local,
     kiosk: dto,
@@ -209,7 +259,7 @@ export async function requestBulkSoftwareUpdate(ids?: string[]): Promise<{
     list = list.filter((k) => k.lastSeenAt && k.lastSeenAt.getTime() > threshold);
   }
 
-  // Parallel WinRM so fleet updates start together without N×serial wait
+  // Parallel: each kiosk gets HTTP nudge first (instant)
   const settled = await Promise.all(
     list.map(async (k) => {
       const r = await requestKioskSoftwareUpdate(k.id, { force: true, waitWinRm: true });

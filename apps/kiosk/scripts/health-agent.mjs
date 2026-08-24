@@ -7,6 +7,10 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
 
+function stripBom(s) {
+  return s.charCodeAt(0) === 0xfeff ? s.slice(1) : s;
+}
+
 function loadJsonConfig() {
   const candidates = [
     process.env.STELLA_KIOSK_CONFIG,
@@ -17,7 +21,7 @@ function loadJsonConfig() {
   for (const file of candidates) {
     try {
       if (file && fs.existsSync(file)) {
-        return JSON.parse(fs.readFileSync(file, "utf8"));
+        return JSON.parse(stripBom(fs.readFileSync(file, "utf8")));
       }
     } catch {
       /* try next */

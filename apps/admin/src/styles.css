@@ -2653,3 +2653,36 @@ label {
   color: #fff;
   cursor: pointer;
 }
+
+.exhibit-editor__game {
+  gap: 0.85rem;
+}
+
+.kiosk-preview-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: #111;
+}
+
+.kiosk-preview-shell__bar {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.55rem 0.85rem;
+  background: #1c1c20;
+  color: #eee;
+}
+
+.kiosk-preview-shell__note {
+  margin: 0;
+  font-size: 0.85rem;
+  opacity: 0.8;
+}
+
+.kiosk-preview-shell__frame {
+  flex: 1;
+  width: 100%;
+  border: 0;
+  background: #000;
+}

@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useMemo, useState, type KeyboardEvent } from "react";
-import { formatSpecsText, parseSpecsText, type SpecRow } from "@stella/shared";
+import { useNavigate } from "react-router-dom";
+import { formatSpecsText, parseSpecsText, type GameShareDto, type SpecRow } from "@stella/shared";
 import { useAuth } from "../auth";
 import { api, uploadFile } from "../api";
 import { PageShell } from "../components/ui/PageShell";
@@ -25,6 +26,9 @@ type Exhibit = {
   video?: MediaRef | null;
   audio?: MediaRef | null;
   gallery?: MediaRef[];
+  gameTitle?: string;
+  gameShareFolder?: string;
+  gameExe?: string;
 };
 
 type FormState = {
@@ -41,6 +45,9 @@ type FormState = {
   audioPreview: string | null;
   audioName: string | null;
   galleryPreviews: MediaRef[];
+  gameTitle: string;
+  gameShareFolder: string;
+  gameExe: string;
 };
 
 const emptyForm = (): FormState => ({
@@ -57,11 +64,15 @@ const emptyForm = (): FormState => ({
   audioPreview: null,
   audioName: null,
   galleryPreviews: [],
+  gameTitle: "Играть",
+  gameShareFolder: "",
+  gameExe: "",
 });
 
 export function ExhibitsPage() {
   const { canEdit } = useAuth();
   const confirmDialog = useConfirm();
+  const navigate = useNavigate();
   const [list, setList] = useState<Exhibit[]>([]);
   const [form, setForm] = useState<FormState>(emptyForm);
   const [editId, setEditId] = useState<string | null>(null);
@@ -73,6 +84,7 @@ export function ExhibitsPage() {
     null
   );
   const [dirty, setDirty] = useState(false);
+  const [gameShare, setGameShare] = useState<GameShareDto | null>(null);
 
   async function load() {
     setList(await api<Exhibit[]>("/api/exhibits"));
@@ -80,6 +92,9 @@ export function ExhibitsPage() {
 
   useEffect(() => {
     load().catch((e) => setError(e.message));
+    api<GameShareDto>("/api/game-share")
+      .then(setGameShare)
+      .catch(() => setGameShare(null));
   }, []);
 
   const filtered = useMemo(() => {
@@ -122,6 +137,9 @@ export function ExhibitsPage() {
       audioPreview: e.audio?.url ?? null,
       audioName: e.audio?.filename ?? null,
       galleryPreviews: e.gallery ?? [],
+      gameTitle: e.gameTitle || "Играть",
+      gameShareFolder: e.gameShareFolder || "",
+      gameExe: e.gameExe || "",
     });
     setMode("edit");
     setDirty(false);
@@ -212,6 +230,9 @@ export function ExhibitsPage() {
         galleryIds: form.galleryIds,
         videoId: form.videoId,
         audioId: form.audioId,
+        gameTitle: form.gameTitle,
+        gameShareFolder: form.gameShareFolder,
+        gameExe: form.gameExe,
       };
       const saved = editId
         ? await api<Exhibit>(`/api/exhibits/${editId}`, { method: "PATCH", json: payload })
@@ -232,6 +253,9 @@ export function ExhibitsPage() {
         audioPreview: saved.audio?.url ?? null,
         audioName: saved.audio?.filename ?? null,
         galleryPreviews: saved.gallery ?? [],
+        gameTitle: saved.gameTitle || "Играть",
+        gameShareFolder: saved.gameShareFolder || "",
+        gameExe: saved.gameExe || "",
       });
       setDirty(false);
       setMode("edit");
@@ -254,6 +278,20 @@ export function ExhibitsPage() {
     }
     // Enter в input (название…) не должен случайно сохранять форму
     e.preventDefault();
+  }
+
+  async function openPreview(id: string | null) {
+    if (!id) return;
+    if (dirty) {
+      const ok = await confirmDialog({
+        title: "Превью сохранённой версии?",
+        message: "На киоске будет показан последний сохранённый экспонат. Несохранённые правки в превью не попадут.",
+        confirmLabel: "Открыть превью",
+        tone: "warn",
+      });
+      if (!ok) return;
+    }
+    navigate(`/exhibits/${id}/preview`);
   }
 
   async function remove(id: string) {
@@ -293,6 +331,16 @@ export function ExhibitsPage() {
             <button type="button" className="btn secondary" onClick={backToList} disabled={busy}>
               ← К списку
             </button>
+            {editId ? (
+              <button
+                type="button"
+                className="btn secondary"
+                onClick={() => void openPreview(editId)}
+                disabled={busy}
+              >
+                Как на киоске
+              </button>
+            ) : null}
             {canEdit ? (
               <>
                 <button type="button" className="btn secondary" onClick={backToList} disabled={busy}>
@@ -523,6 +571,79 @@ export function ExhibitsPage() {
               </div>
             </fieldset>
           </Card>
+          <Card title="Игра на киоске">
+            <fieldset disabled={!canEdit || busy} className="exhibit-editor__fields exhibit-editor__game">
+              <p className="field-hint">
+                Файл игры не загружается на сервер. Киоск копирует выбранную папку с шары
+                {gameShare?.unc ? ` (${gameShare.unc})` : ""} в C:\ProgramData\omskekran\games.
+              </p>
+              <label>
+                Подпись кнопки
+                <input
+                  value={form.gameTitle}
+                  onChange={(e) => patchForm({ gameTitle: e.target.value })}
+                  placeholder="Играть"
+                />
+              </label>
+              <label>
+                Папка на шаре
+                {gameShare?.folders?.length ? (
+                  <select
+                    value={form.gameShareFolder}
+                    onChange={(e) =>
+                      patchForm({ gameShareFolder: e.target.value, gameExe: "" })
+                    }
+                  >
+                    <option value="">Нет игры</option>
+                    {gameShare.folders.map((f) => (
+                      <option key={f.name} value={f.name}>
+                        {f.name}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    value={form.gameShareFolder}
+                    onChange={(e) => patchForm({ gameShareFolder: e.target.value })}
+                    placeholder="Имя папки на шаре"
+                  />
+                )}
+              </label>
+              <label>
+                Файл .exe
+                {(() => {
+                  const folder = gameShare?.folders?.find((f) => f.name === form.gameShareFolder);
+                  const exes = folder?.exes ?? [];
+                  return exes.length ? (
+                    <select
+                      value={form.gameExe}
+                      onChange={(e) => patchForm({ gameExe: e.target.value })}
+                      disabled={!form.gameShareFolder}
+                    >
+                      <option value="">Выберите .exe</option>
+                      {exes.map((exe) => (
+                        <option key={exe} value={exe}>
+                          {exe}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input
+                      value={form.gameExe}
+                      onChange={(e) => patchForm({ gameExe: e.target.value })}
+                      placeholder="Game.exe"
+                      disabled={!form.gameShareFolder}
+                    />
+                  );
+                })()}
+              </label>
+              <span className="field-hint">
+                {gameShare?.scannedAt
+                  ? `Список папок с киоска ${gameShare.sourceHostname || "—"} · ${new Date(gameShare.scannedAt).toLocaleString("ru-RU")}`
+                  : "Список папок появится, когда киоск в домене увидит шару."}
+              </span>
+            </fieldset>
+          </Card>
         </form>
       </PageShell>
     );
@@ -592,6 +713,13 @@ export function ExhibitsPage() {
                 <td className="exhibits-table__actions">
                   <button type="button" className="btn secondary" onClick={() => openEdit(e)}>
                     {canEdit ? "Открыть" : "Смотреть"}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn secondary"
+                    onClick={() => void openPreview(e.id)}
+                  >
+                    Как на киоске
                   </button>
                   {canEdit && (
                     <button type="button" className="btn danger" onClick={() => remove(e.id)}>

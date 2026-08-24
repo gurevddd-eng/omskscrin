@@ -75,6 +75,12 @@ model Exhibit {
   videoId        String?
   audioId        String?
   contentVersion String   @default("1")
+  /// Label on the kiosk Play button
+  gameTitle      String   @default("Играть")
+  /// Folder name on the game UNC share (not a full path)
+  gameShareFolder String  @default("")
+  /// .exe relative to that folder (e.g. Game.exe or bin\\game.exe)
+  gameExe        String   @default("")
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
@@ -156,6 +162,12 @@ model SiteSettings {
   domainSuffix      String   @default("udhb.local")
   /// auto | ssh | winrm — empty/null = use .env DEPLOY_TRANSPORT
   deployTransport   String?
+  /// UNC root with one folder per game (domain-joined kiosks, no extra credentials)
+  gameShareUnc       String    @default("\\\\HYDRALISK3\\Patriot\\Игры парк победы")
+  /// Latest folder/exe listing reported by a kiosk
+  gameShareFolders   Json      @default("[]")
+  gameShareScannedAt DateTime?
+  gameShareSource    String?
   updatedAt       DateTime @updatedAt
 }
 

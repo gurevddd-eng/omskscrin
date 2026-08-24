@@ -231,82 +231,27 @@ async function buildFileMap(manifest: KioskManifest): Promise<{
   complete: boolean;
   rebuilt: boolean;
 }> {
-  const map: Record<string, string> = {};
-  let complete = true;
-  let rebuilt = false;
-  const files = manifest.files || [];
-  const keep = new Set(files.map((f) => f.id));
-  const storedById = await idbGetMany(files.map((f) => f.id));
-
-  for (const f of files) {
-    const expected = fileHash(f);
-    const live = liveBlobs.get(f.id);
-    if (live && live.hash === expected) {
-      map[f.id] = live.url;
-      continue;
-    }
-
-    const stored = storedById.get(f.id);
-    if (blobLooksValid(stored, f) && stored?.blob) {
-      if (live) revokeUrl(live.url);
-      const url = URL.createObjectURL(stored.blob);
-      liveBlobs.set(f.id, { hash: expected, url });
-      map[f.id] = url;
-      rebuilt = true;
-    } else {
-      complete = false;
-      if (live) {
-        revokeUrl(live.url);
-        liveBlobs.delete(f.id);
-        rebuilt = true;
-      }
-    }
-  }
-
-  for (const [id, row] of [...liveBlobs.entries()]) {
-    if (!keep.has(id)) {
-      revokeUrl(row.url);
-      liveBlobs.delete(id);
-      rebuilt = true;
-    }
-  }
-
-  return { fileBlobs: map, complete, rebuilt };
+  // Full IndexedDB → disk replacement: kiosk UI uses /media/:id from the agent.
+  // Keep the manifest locally, but do not build blob URLs.
+  return { fileBlobs: {}, complete: true, rebuilt: false };
 }
 
 /** True when local IndexedDB has every file from the saved manifest. */
 export async function isLocalCacheComplete(manifest?: KioskManifest | null): Promise<boolean> {
-  const m = manifest || loadManifestOnly()?.manifest;
-  if (!m) return false;
-  const files = m.files || [];
-  const storedById = await idbGetMany(files.map((f) => f.id));
-  for (const f of files) {
-    if (!blobLooksValid(storedById.get(f.id), f)) return false;
-  }
-  return true;
+  // Disk completeness is handled by the agent on-demand caching.
+  return Boolean(manifest || loadManifestOnly()?.manifest);
 }
 
 export async function loadLocalCache(_serverUrl?: string): Promise<CachedState | null> {
   const meta = loadManifestOnly();
   if (!meta) return null;
-  try {
-    const { fileBlobs, complete } = await buildFileMap(meta.manifest);
-    return {
-      manifest: meta.manifest,
-      fileBlobs,
-      syncedAt: meta.syncedAt,
-      syncFingerprint: meta.syncFingerprint || fingerprintOf(meta.manifest),
-      complete,
-    };
-  } catch {
-    return {
-      manifest: meta.manifest,
-      fileBlobs: {},
-      syncedAt: meta.syncedAt,
-      syncFingerprint: meta.syncFingerprint || fingerprintOf(meta.manifest),
-      complete: false,
-    };
-  }
+  return {
+    manifest: meta.manifest,
+    fileBlobs: {},
+    syncedAt: meta.syncedAt,
+    syncFingerprint: meta.syncFingerprint || fingerprintOf(meta.manifest),
+    complete: true,
+  };
 }
 
 export function getStoredFingerprint(): string | null {
@@ -385,16 +330,10 @@ export async function syncContent(
 
     const manifest = (await res.json()) as KioskManifest;
     const remoteFp = fingerprintOf(manifest);
-    const files = manifest.files || [];
     const localMeta = loadManifestOnly();
 
-    // Fast path: same content already fully on disk — do not touch blob URLs
-    if (
-      opts?.knownFingerprint &&
-      opts.knownFingerprint === remoteFp &&
-      localMeta?.syncFingerprint === remoteFp &&
-      (await isLocalCacheComplete(manifest))
-    ) {
+    // Offline/Disk replacement: manifest is our local source of truth.
+    if (opts?.knownFingerprint && opts.knownFingerprint === remoteFp && localMeta?.syncFingerprint === remoteFp) {
       const cached = await loadLocalCache();
       return {
         state: cached,
@@ -404,91 +343,39 @@ export async function syncContent(
       };
     }
 
-    const keep = new Set(files.map((f) => f.id));
-    const base = config.serverUrl.replace(/\/$/, "");
-    const storedById = await idbGetMany(files.map((f) => f.id));
-
-    const missing = files.filter((file) => !blobLooksValid(storedById.get(file.id), file));
-    const total = files.length;
-    let done = total - missing.length;
-    opts?.onProgress?.({ done, total, downloading: missing.length });
-
-    let downloaded = 0;
-    const results = await mapPool(missing, DOWNLOAD_CONCURRENCY, async (file) => {
-      const url = file.url.startsWith("http") ? file.url : `${base}${file.url}`;
-      try {
-        // Prefer HTTP cache if Edge still has the bytes; IDB is the source of truth after save
-        const fr = await fetch(url, { cache: "force-cache", mode: "cors" });
-        if (!fr.ok) return `${file.filename || file.id} (${fr.status})`;
-        const blob = await fr.blob();
-        if (blob.size < 32) return `${file.filename || file.id} (empty body)`;
-        await idbPut({
-          id: file.id,
-          hash: fileHash(file),
-          mimeType: file.mimeType || blob.type || "application/octet-stream",
-          blob,
-        });
-        downloaded += 1;
-        done += 1;
-        opts?.onProgress?.({
-          done,
-          total,
-          downloading: Math.max(0, missing.length - downloaded),
-        });
-        return null as string | null;
-      } catch (e) {
-        return `${file.filename || file.id}: ${e instanceof Error ? e.message : "fetch failed"}`;
-      }
-    });
-
-    const failed = results.filter((x): x is string => Boolean(x));
-
-    if (localMeta?.manifest?.files) {
-      for (const f of localMeta.manifest.files) {
-        if (!keep.has(f.id)) await idbDelete(f.id);
-      }
-    }
-
     const syncedAt = new Date().toISOString();
     saveManifestOnly(manifest, syncedAt);
-    const { fileBlobs, complete, rebuilt } = await buildFileMap(manifest);
+
+    const changed = !localMeta || localMeta.syncFingerprint !== remoteFp;
     const state: CachedState = {
       manifest,
-      fileBlobs,
+      fileBlobs: {},
       syncedAt,
       syncFingerprint: remoteFp,
-      complete,
+      complete: true,
     };
-
-    const changed =
-      rebuilt ||
-      downloaded > 0 ||
-      failed.length > 0 ||
-      localMeta?.syncFingerprint !== remoteFp ||
-      !localMeta;
-
-    if (failed.length || !complete) {
-      return {
-        state,
-        syncStatus: "error",
-        syncMessage: failed.length
-          ? `частично: не скачано ${failed.length} файл(ов)`
-          : "локальный кэш неполный",
-        changed: true,
-      };
-    }
 
     return {
       state,
       syncStatus: "ok",
-      syncMessage: downloaded > 0 ? `сохранено локально · ${total} файл(ов)` : null,
+      syncMessage: changed ? "обновлено (manifest)" : null,
       changed,
     };
   } catch (e) {
+    const msg = e instanceof Error ? e.message : "sync failed";
+    const cached = await loadLocalCache();
+    if (cached) {
+      return {
+        state: cached,
+        syncStatus: "ok",
+        syncMessage: "офлайн — локальный кэш",
+        changed: false,
+      };
+    }
     return {
       state: null,
       syncStatus: "error",
-      syncMessage: e instanceof Error ? e.message : "sync failed",
+      syncMessage: msg,
       changed: false,
     };
   }
@@ -533,14 +420,27 @@ export async function sendHeartbeat(
   return remote;
 }
 
-/** Local blob URL only — no live network streaming. */
+/** Prefer agent disk cache on the hall PC; CMS URL in admin preview / fallback. */
 export function mediaUrl(
   state: CachedState | null,
   fileId: string | null | undefined,
-  _serverUrl?: string
+  serverUrl?: string,
+  agent?: { port: number } | null
 ) {
-  if (!state || !fileId) return null;
-  return state.fileBlobs[fileId] || null;
+  if (!fileId) return null;
+  if (agent?.port) {
+    return `http://127.0.0.1:${agent.port}/media/${encodeURIComponent(fileId)}`;
+  }
+  const blob = state?.fileBlobs?.[fileId];
+  if (blob) return blob;
+  const file = state?.manifest?.files?.find((f) => f.id === fileId);
+  if (!file?.url) return null;
+  if (file.url.startsWith("http")) return file.url;
+  // Admin preview / same-origin API: allow relative URLs without serverUrl base.
+  if (file.url.startsWith("/")) return file.url;
+  const base = String(serverUrl || "").replace(/\/$/, "");
+  if (!base) return null;
+  return `${base}${file.url}`;
 }
 
 /** Dev helper — not required at runtime */

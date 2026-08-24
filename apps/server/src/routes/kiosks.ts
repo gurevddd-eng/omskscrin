@@ -2,7 +2,6 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { prisma } from "../prisma.js";
 import { authenticate, requireRoles } from "../auth.js";
-import { toFileDto } from "./files.js";
 import {
   addMonitorClient,
   broadcastKioskRemoved,
@@ -19,10 +18,10 @@ import {
 } from "../kioskProbe.js";
 import { expandHostname, getEffectiveDeploy, refreshDeployCredentialsFromDb } from "../deployCredentials.js";
 import { testWindowsHostConnection } from "../deployTest.js";
-import { parseSpecs } from "./exhibits.js";
+import type { Prisma } from "@prisma/client";
 import { getGlobalAdsState, syncFingerprint } from "./ads.js";
-import { getGlobalTimelineState } from "./timeline.js";
 import { ensureSiteSettings } from "../siteSettings.js";
+import { buildKioskManifest, exhibitMediaInclude } from "../kioskManifest.js";
 import { createHash } from "node:crypto";
 import { createReadStream, existsSync } from "node:fs";
 import { cancelKioskInstall, clearInstallCancelRequest, deployPackageReady, startKioskInstall } from "../remoteInstall.js";
@@ -53,6 +52,16 @@ function resolveKioskHostname(raw: string) {
   return expandHostname(normalizeHostname(raw), getEffectiveDeploy().domainSuffix);
 }
 
+/** Match short name (itpc07) or FQDN (itpc07.udhb.local) against kioskId/hostname. */
+function kioskHostWhere(raw: string) {
+  const key = normalizeHostname(raw);
+  const fqdn = resolveKioskHostname(raw);
+  const keys = [...new Set([key, fqdn, raw].filter(Boolean))];
+  return {
+    OR: keys.flatMap((k) => [{ kioskId: k }, { hostname: k }]),
+  };
+}
+
 function bumpSettingsVersion(current: string) {
   const n = Number(current);
   if (Number.isFinite(n)) return String(n + 1);
@@ -76,6 +85,18 @@ const heartbeatSchema = z.object({
   appVersion: z.string().nullable().optional(),
   softwareVersion: z.string().nullable().optional(),
   hostname: z.string().optional(),
+  gameShare: z
+    .object({
+      folders: z
+        .array(
+          z.object({
+            name: z.string().min(1).max(200),
+            exes: z.array(z.string().max(400)).max(80),
+          })
+        )
+        .max(200),
+    })
+    .optional(),
 });
 
 export async function registerKioskRoutes(app: FastifyInstance) {
@@ -533,81 +554,18 @@ export async function registerKioskRoutes(app: FastifyInstance) {
   app.get("/api/kiosks/:kioskId/manifest", async (request, reply) => {
     reply.header("Cache-Control", "no-store");
     const { kioskId } = request.params as { kioskId: string };
-    const key = normalizeHostname(kioskId);
     const kiosk = await prisma.kiosk.findFirst({
-      where: { OR: [{ kioskId: key }, { hostname: key }, { kioskId }, { hostname: kioskId }] },
-      include: {
-        exhibit: {
-          include: {
-            gallery: { orderBy: { sortOrder: "asc" }, include: { file: true } },
-            heroImage: true,
-            video: true,
-            audio: true,
-          },
-        },
-      },
+      where: kioskHostWhere(kioskId),
+      include: { exhibit: { include: exhibitMediaInclude } },
     });
 
     if (!kiosk) return reply.code(404).send({ error: "Kiosk not found" });
 
-    const exhibit = kiosk.exhibit;
-    const globalAds = await getGlobalAdsState();
-    const timeline = await getGlobalTimelineState();
-    const filesMap = new Map<
-      string,
-      { id: string; filename: string; mimeType: string; size: number; hash: string }
-    >();
-
-    if (exhibit?.heroImage) filesMap.set(exhibit.heroImage.id, exhibit.heroImage);
-    if (exhibit?.video) filesMap.set(exhibit.video.id, exhibit.video);
-    if (exhibit?.audio) filesMap.set(exhibit.audio.id, exhibit.audio);
-    for (const g of exhibit?.gallery ?? []) filesMap.set(g.file.id, g.file);
-    for (const f of globalAds.files) filesMap.set(f.id, f);
-    for (const f of timeline.files) filesMap.set(f.id, f);
-
-    const files = [...filesMap.values()].map((f) => ({
-      ...toFileDto(f),
-      hash: f.hash,
-    }));
-
-    return {
+    return buildKioskManifest({
       kioskId: kiosk.kioskId,
       hostname: kiosk.hostname,
-      exhibit: exhibit
-        ? {
-            id: exhibit.id,
-            title: exhibit.title,
-            summary: exhibit.summary,
-            body: exhibit.body,
-            specs: parseSpecs(exhibit.specs),
-            heroImageId: exhibit.heroImageId,
-            galleryIds: exhibit.gallery.map((g) => g.fileId),
-            videoId: exhibit.videoId,
-            audioId: exhibit.audioId,
-            contentVersion: exhibit.contentVersion,
-            updatedAt: exhibit.updatedAt.toISOString(),
-          }
-        : null,
-      adIds: globalAds.adIds,
-      adsVersion: globalAds.adsVersion,
-      timelinePages: timeline.pages.map((p) => ({
-        id: p.id,
-        label: p.label,
-        sortOrder: p.sortOrder,
-        imageIds: p.imageIds,
-      })),
-      timelineVersion: timeline.timelineVersion,
-      blockKeyboard: globalAds.blockKeyboard,
-      softwareEnabled: globalAds.softwareEnabled,
-      themeMode: globalAds.themeMode,
-      themeDarkFrom: globalAds.themeDarkFrom,
-      themeDarkTo: globalAds.themeDarkTo,
-      theme: globalAds.theme,
-      settingsVersion: globalAds.settingsVersion,
-      files,
-      contentVersion: exhibit?.contentVersion ?? null,
-      serverTime: new Date().toISOString(),
-    };
+      exhibit: kiosk.exhibit,
+    });
   });
 
   app.get("/api/deploy/meta", async () => {
@@ -650,9 +608,8 @@ export async function registerKioskRoutes(app: FastifyInstance) {
   /** Live push: admin content changes → kiosk UI syncs immediately (no JWT). */
   app.get("/api/kiosks/:kioskId/events", async (request, reply) => {
     const { kioskId } = request.params as { kioskId: string };
-    const key = normalizeHostname(kioskId);
     const kiosk = await prisma.kiosk.findFirst({
-      where: { OR: [{ kioskId: key }, { hostname: key }, { kioskId }, { hostname: kioskId }] },
+      where: kioskHostWhere(kioskId),
       select: { kioskId: true },
     });
     if (!kiosk) return reply.code(404).send({ error: "Kiosk not found" });
@@ -682,9 +639,8 @@ export async function registerKioskRoutes(app: FastifyInstance) {
   app.get("/api/kiosks/:kioskId/updates", async (request, reply) => {
     reply.header("Cache-Control", "no-store");
     const { kioskId } = request.params as { kioskId: string };
-    const key = normalizeHostname(kioskId);
     const kiosk = await prisma.kiosk.findFirst({
-      where: { OR: [{ kioskId: key }, { hostname: key }, { kioskId }, { hostname: kioskId }] },
+      where: kioskHostWhere(kioskId),
       include: { exhibit: { select: { contentVersion: true } } },
     });
     if (!kiosk) return reply.code(404).send({ error: "Kiosk not found" });
@@ -741,10 +697,9 @@ export async function registerKioskRoutes(app: FastifyInstance) {
   app.post("/api/kiosks/:kioskId/heartbeat", async (request, reply) => {
     const { kioskId } = request.params as { kioskId: string };
     const body = heartbeatSchema.parse(request.body ?? {});
-    const key = normalizeHostname(kioskId);
     try {
       const existing = await prisma.kiosk.findFirst({
-        where: { OR: [{ kioskId: key }, { hostname: key }, { kioskId }, { hostname: kioskId }] },
+        where: kioskHostWhere(kioskId),
       });
       if (!existing) return reply.code(404).send({ error: "Kiosk not found" });
 
@@ -757,7 +712,7 @@ export async function registerKioskRoutes(app: FastifyInstance) {
           syncMessage: body.syncMessage === undefined ? undefined : body.syncMessage,
           appVersion: body.appVersion === undefined ? undefined : body.appVersion,
           softwareVersion: body.softwareVersion === undefined ? undefined : body.softwareVersion,
-          hostname: body.hostname ? normalizeHostname(body.hostname) : undefined,
+          hostname: body.hostname ? resolveKioskHostname(body.hostname) : undefined,
         },
         include: { exhibit: { select: { title: true, contentVersion: true } } },
       });
@@ -766,6 +721,16 @@ export async function registerKioskRoutes(app: FastifyInstance) {
 
       const meta = getDeployMeta();
       const settings = await ensureSiteSettings();
+      if (body.gameShare) {
+        await prisma.siteSettings.update({
+          where: { id: "default" },
+          data: {
+            gameShareFolders: body.gameShare.folders as Prisma.InputJsonValue,
+            gameShareScannedAt: new Date(),
+            gameShareSource: k.hostname,
+          },
+        });
+      }
       const contentVersion = k.exhibit?.contentVersion ?? null;
       const adsVersion = settings.adsVersion;
       const settingsVersion = settings.settingsVersion;
@@ -796,6 +761,7 @@ export async function registerKioskRoutes(app: FastifyInstance) {
         targetSoftwareVersion: meta.softwareVersion,
         updateAvailable,
         forceUpdate,
+        gameShareUnc: settings.gameShareUnc,
       };
     } catch {
       return reply.code(404).send({ error: "Kiosk not found" });

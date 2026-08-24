@@ -73,8 +73,8 @@ export function buildKioskJsonConfig(
     kioskId: kiosk.kioskId.toLowerCase(),
     serverUrl: net.serverUrl,
     syncIntervalSec: 60,
-    /** OTA poll — keep shorter than content sync so fleet catches builds */
-    softwareCheckIntervalSec: 60,
+    /** OTA poll — every 5s so «Обновить ПО» / новый пакет подхватываются быстро */
+    softwareCheckIntervalSec: 5,
     idleTimeoutSec: 600,
     heartbeatIntervalSec: 30,
     healthPort: net.healthPort,

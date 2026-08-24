@@ -203,6 +203,26 @@ export function formatSpecsText(specs: SpecRow[]): string {
     .join("\n");
 }
 
+export interface ExhibitGame {
+  title: string;
+  shareFolder: string;
+  exe: string;
+}
+
+export interface GameShareFolder {
+  name: string;
+  exes: string[];
+}
+
+export interface GameShareDto {
+  unc: string;
+  folders: GameShareFolder[];
+  scannedAt: string | null;
+  sourceHostname: string | null;
+}
+
+export const DEFAULT_GAME_SHARE_UNC = "\\\\HYDRALISK3\\Patriot\\Игры парк победы";
+
 export interface ExhibitDto {
   id: string;
   title: string;
@@ -215,6 +235,9 @@ export interface ExhibitDto {
   audioId: string | null;
   contentVersion: string;
   updatedAt: string;
+  gameTitle: string;
+  gameShareFolder: string;
+  gameExe: string;
 }
 
 export interface FileDto {
@@ -242,6 +265,10 @@ export interface KioskDto {
   syncMessage: string | null;
   appVersion: string | null;
   softwareVersion: string | null;
+  /** Server package version the fleet should be on (from deploy/current). */
+  otaTarget?: string | null;
+  /** Admin forced OTA; waiting for agent to report matching softwareVersion. */
+  otaPending?: boolean;
   probeStatus: ProbeStatus;
   probeMessage: string | null;
   lastProbeAt: string | null;
@@ -267,6 +294,9 @@ export interface HeartbeatRequest {
   appVersion?: string | null;
   softwareVersion?: string | null;
   hostname?: string;
+  gameShare?: {
+    folders: GameShareFolder[];
+  };
 }
 
 export interface ManifestFile {
@@ -293,6 +323,7 @@ export interface KioskManifest {
     audioId: string | null;
     contentVersion: string;
     updatedAt: string;
+    game: ExhibitGame | null;
   } | null;
   /** Global ads for all kiosks */
   adIds: string[];

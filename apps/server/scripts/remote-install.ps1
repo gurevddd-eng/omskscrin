@@ -73,7 +73,9 @@ function Write-KioskConfig([string]$TargetRoot) {
     uiPort               = $UiPort
     appVersion           = $AppVersion
   }
-  ($cfgObj | ConvertTo-Json) | Set-Content -Path (Join-Path $TargetRoot "kiosk.json") -Encoding UTF8
+  # UTF8 without BOM — Node JSON.parse rejects EF BB BF
+  $utf8 = New-Object System.Text.UTF8Encoding $false
+  [System.IO.File]::WriteAllText((Join-Path $TargetRoot "kiosk.json"), ($cfgObj | ConvertTo-Json), $utf8)
 }
 
 function Expand-PackageTo([string]$TargetRoot, [string]$ZipPath) {
@@ -329,7 +331,8 @@ try {
   $cfg = $cfgObj | ConvertTo-Json
   Invoke-Command -Session $session -ScriptBlock {
     param($root, $json)
-    Set-Content -Path (Join-Path $root "kiosk.json") -Value $json -Encoding UTF8
+    $utf8 = New-Object System.Text.UTF8Encoding $false
+    [System.IO.File]::WriteAllText((Join-Path $root "kiosk.json"), $json, $utf8)
   } -ArgumentList $remoteRoot, $cfg
 
   Write-Stage "installing"

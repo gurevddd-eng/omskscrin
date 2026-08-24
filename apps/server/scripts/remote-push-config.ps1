@@ -22,7 +22,9 @@ $pushBlock = {
   if (-not (Test-Path (Join-Path $root "agent.mjs"))) {
     throw "StellaKiosk not installed at $root"
   }
-  Set-Content -Path (Join-Path $root "kiosk.json") -Value $Json -Encoding UTF8
+  # UTF8 without BOM — Node JSON.parse rejects EF BB BF
+  $utf8 = New-Object System.Text.UTF8Encoding $false
+  [System.IO.File]::WriteAllText((Join-Path $root "kiosk.json"), $Json, $utf8)
 
   $taskAgent = "StellaKioskAgent"
   try { Stop-ScheduledTask -TaskName $taskAgent -ErrorAction SilentlyContinue } catch {}

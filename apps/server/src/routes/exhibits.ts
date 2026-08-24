@@ -21,7 +21,14 @@ const exhibitSchema = z.object({
   videoId: z.string().nullable().optional(),
   audioId: z.string().nullable().optional(),
   galleryIds: z.array(z.string()).optional(),
+  gameTitle: z.string().max(80).optional(),
+  gameShareFolder: z.string().max(260).nullable().optional(),
+  gameExe: z.string().max(260).nullable().optional(),
 });
+
+function normalizeGameField(value: string | null | undefined) {
+  return String(value ?? "").trim();
+}
 
 function bumpVersion(current: string) {
   const n = Number(current);
@@ -68,6 +75,9 @@ function toExhibitDto(e: {
   audioId: string | null;
   contentVersion: string;
   updatedAt: Date;
+  gameTitle: string;
+  gameShareFolder: string;
+  gameExe: string;
   gallery: { fileId: string; file: Parameters<typeof toFileDto>[0] }[];
   heroImage: Parameters<typeof toFileDto>[0] | null;
   video: Parameters<typeof toFileDto>[0] | null;
@@ -85,6 +95,9 @@ function toExhibitDto(e: {
     audioId: e.audioId,
     contentVersion: e.contentVersion,
     updatedAt: e.updatedAt.toISOString(),
+    gameTitle: e.gameTitle || "Играть",
+    gameShareFolder: e.gameShareFolder || "",
+    gameExe: e.gameExe || "",
     heroImage: e.heroImage ? toFileDto(e.heroImage) : null,
     video: e.video ? toFileDto(e.video) : null,
     audio: e.audio ? toFileDto(e.audio) : null,
@@ -136,6 +149,9 @@ export async function registerExhibitRoutes(app: FastifyInstance) {
         heroImageId: body.heroImageId ?? null,
         videoId: body.videoId ?? null,
         audioId: body.audioId ?? null,
+        gameTitle: normalizeGameField(body.gameTitle) || "Играть",
+        gameShareFolder: normalizeGameField(body.gameShareFolder),
+        gameExe: normalizeGameField(body.gameExe),
         contentVersion: "1",
         gallery: body.galleryIds
           ? {
@@ -181,6 +197,15 @@ export async function registerExhibitRoutes(app: FastifyInstance) {
             heroImageId: body.heroImageId === undefined ? undefined : body.heroImageId,
             videoId: body.videoId === undefined ? undefined : body.videoId,
             audioId: body.audioId === undefined ? undefined : body.audioId,
+            gameTitle:
+              body.gameTitle === undefined
+                ? undefined
+                : normalizeGameField(body.gameTitle) || "Играть",
+            gameShareFolder:
+              body.gameShareFolder === undefined
+                ? undefined
+                : normalizeGameField(body.gameShareFolder),
+            gameExe: body.gameExe === undefined ? undefined : normalizeGameField(body.gameExe),
             contentVersion: bumpVersion(existing.contentVersion),
           },
         });

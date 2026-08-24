@@ -18,7 +18,7 @@ export const PRIMARY_NAV: NavItem[] = [
 ];
 
 const PAGE_MAP: { match: (p: string) => boolean; section: string; title: string }[] = [
-  { match: (p) => p === "/" || p === "", section: "Быстрый доступ", title: "Главная" },
+  { match: (p) => p === "/" || p === "", section: "Доступ", title: "Обзор" },
   { match: (p) => p === "/monitor", section: "Мониторинг", title: "Live-поток" },
   { match: (p) => p.startsWith("/exhibits"), section: "Контент", title: "Экспонаты" },
   { match: (p) => p.startsWith("/timeline"), section: "Контент", title: "Хроника" },
