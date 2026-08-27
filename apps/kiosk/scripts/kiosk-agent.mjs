@@ -271,6 +271,38 @@ function robocopyErrorMessage(code, uncFolder) {
   return `Ошибка копирования (код ${code})`;
 }
 
+const ROBOCOPY_ONCE_PS1 = `$ErrorActionPreference = 'Stop'
+param([Parameter(Mandatory=$true)][string]$JobPath)
+$job = Get-Content -LiteralPath $JobPath -Raw | ConvertFrom-Json
+$Src = [string]$job.src
+$Dst = [string]$job.dst
+$CodeOut = [string]$job.codeOut
+if (-not $Src -or -not $Dst -or -not $CodeOut) { exit 2 }
+if (-not (Test-Path -LiteralPath $Src)) {
+  Set-Content -LiteralPath $CodeOut -Value '16' -Encoding ASCII -NoNewline
+  exit 3
+}
+New-Item -ItemType Directory -Force -Path $Dst | Out-Null
+$p = Start-Process -FilePath 'robocopy.exe' -ArgumentList @(
+  $Src,
+  $Dst,
+  '/E','/COPY:DAT','/DCOPY:DAT','/XO','/R:1','/W:2','/NFL','/NDL','/NJH','/NJS','/NP'
+) -Wait -PassThru -WindowStyle Hidden
+$code = if ($p) { [int]$p.ExitCode } else { 16 }
+Set-Content -LiteralPath $CodeOut -Value ([string]$code) -Encoding ASCII -NoNewline
+`;
+
+function ensureRobocopyHelper() {
+  const helperPath = path.join(omskekranRoot, "_robocopy_once.ps1");
+  try {
+    fs.mkdirSync(omskekranRoot, { recursive: true });
+    fs.writeFileSync(helperPath, ROBOCOPY_ONCE_PS1, "utf8");
+  } catch {
+    /* ignore */
+  }
+  return helperPath;
+}
+
 function folderBytes(dir) {
   let total = 0;
   const stack = [dir];
@@ -721,16 +753,23 @@ const healthServer = http.createServer(async (req, res) => {
           const runRobocopyAsUser = () =>
           new Promise((resolve) => {
             const codeFile = path.join(omskekranRoot, "_robocopy_exit.txt");
+            const jobFile = path.join(omskekranRoot, "_robocopy_job.json");
+            const helperPath = ensureRobocopyHelper();
             try {
               if (fs.existsSync(codeFile)) fs.unlinkSync(codeFile);
+              fs.writeFileSync(
+                jobFile,
+                JSON.stringify({ src: uncFolder, dst: localFolder, codeOut: codeFile }),
+                "utf8"
+              );
             } catch {
-              /* ignore */
+              resolve(16);
+              return;
             }
-            const srcEsc = String(uncFolder).replace(/'/g, "''");
-            const dstEsc = String(localFolder).replace(/'/g, "''");
             const codeEsc = String(codeFile).replace(/'/g, "''");
+            const jobEsc = String(jobFile).replace(/'/g, "''");
+            const helperEsc = String(helperPath).replace(/'/g, "''");
             const cachedEsc = String(readCachedConsoleUser() || "").replace(/'/g, "''");
-            // Note: JS template literal — do not put backticks inside this string.
             const script =
               "$ErrorActionPreference = 'SilentlyContinue'\n" +
               "function Resolve-User {\n" +
@@ -754,19 +793,18 @@ const healthServer = http.createServer(async (req, res) => {
               "$codeOut = '" +
               codeEsc +
               "'\n" +
-              "$src = '" +
-              srcEsc +
+              "$job = '" +
+              jobEsc +
               "'\n" +
-              "$dst = '" +
-              dstEsc +
+              "$helper = '" +
+              helperEsc +
               "'\n" +
               "if (-not $user) { Set-Content -LiteralPath $codeOut -Value '16' -Encoding ASCII -NoNewline; exit 2 }\n" +
-              "if (-not (Test-Path -LiteralPath $src)) { Set-Content -LiteralPath $codeOut -Value '16' -Encoding ASCII -NoNewline; exit 3 }\n" +
-              "New-Item -ItemType Directory -Force -Path $dst | Out-Null\n" +
+              "if (-not (Test-Path -LiteralPath $job)) { Set-Content -LiteralPath $codeOut -Value '16' -Encoding ASCII -NoNewline; exit 3 }\n" +
               "$task = 'StellaKioskRoboOnce'\n" +
               "try { Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue | Out-Null } catch {}\n" +
-              "$arg = ('\"' + $src + '\" \"' + $dst + '\" /E /COPY:DAT /DCOPY:DAT /XO /R:1 /W:2 /NFL /NDL /NJH /NJS /NP')\n" +
-              "$action = New-ScheduledTaskAction -Execute 'robocopy.exe' -Argument $arg\n" +
+              "$arg = '-NoLogo -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"' + $helper + '\" -JobPath \"' + $job + '\"'\n" +
+              "$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $arg\n" +
               "$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances Parallel -ExecutionTimeLimit (New-TimeSpan -Minutes 180) -Hidden\n" +
               "$principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited\n" +
               "Register-ScheduledTask -TaskName $task -Action $action -Settings $settings -Principal $principal -Force | Out-Null\n" +
@@ -780,6 +818,9 @@ const healthServer = http.createServer(async (req, res) => {
               "$info = Get-ScheduledTaskInfo -TaskName $task -ErrorAction SilentlyContinue\n" +
               "$code = 16\n" +
               "if ($info -and ($null -ne $info.LastTaskResult)) { $code = [int]$info.LastTaskResult }\n" +
+              "if (Test-Path -LiteralPath $codeOut) {\n" +
+              "  try { $code = [int](Get-Content -LiteralPath $codeOut -Raw).Trim() } catch {}\n" +
+              "}\n" +
               "Set-Content -LiteralPath $codeOut -Value ([string]$code) -Encoding ASCII -NoNewline\n" +
               "try { Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue | Out-Null } catch {}\n";
             const ps = spawnPowerShell(["-Command", script]);
