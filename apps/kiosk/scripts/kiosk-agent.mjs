@@ -766,19 +766,23 @@ const healthServer = http.createServer(async (req, res) => {
       sendJson(res, 202, { ok: true, accepted: true });
       void (async () => {
         try {
-        let localExePath = findLocalGameExe(localFolder, exeRel);
-        let copiedFinal = localExePath ? folderBytes(localFolder) : 0;
+        // Always robocopy (/XO) so a partial local copy (exe present, Content missing) gets completed.
+        let localExePath = null;
+        let copiedFinal = folderBytes(localFolder);
         let robocode = 0;
         let okCopy = true;
 
-        if (!localExePath) {
+        {
+          const hadLocal = Boolean(findLocalGameExe(localFolder, exeRel));
           patchGameCopy({
             status: "copying",
             folder: localName,
             percent: null,
-            copiedBytes: null,
+            copiedBytes: copiedFinal || null,
             totalBytes: null,
-            message: `Копирование с ${uncFolder}`,
+            message: hadLocal
+              ? `Синхронизация с ${uncFolder}`
+              : `Копирование с ${uncFolder}`,
           });
 
           // SYSTEM cannot access domain SMB shares — copy as interactive console user.
@@ -937,15 +941,30 @@ const healthServer = http.createServer(async (req, res) => {
             return;
           }
           localExePath = findLocalGameExe(localFolder, exeRel);
-        } else {
+        }
+
+        const contentDir = path.join(localFolder, "Tanks", "Content");
+        let contentOk = false;
+        try {
+          contentOk = fs.existsSync(contentDir) && fs.statSync(contentDir).isDirectory();
+          if (contentOk) {
+            const sample = fs.readdirSync(contentDir);
+            contentOk = sample.length > 0;
+          }
+        } catch {
+          contentOk = false;
+        }
+        if (!contentOk) {
+          gameLaunchInProgress = false;
           patchGameCopy({
-            status: "launching",
+            status: "error",
             folder: localName,
-            percent: 100,
+            percent: null,
             copiedBytes: copiedFinal,
             totalBytes: null,
-            message: `На диске · ${path.basename(localExePath)}`,
+            message: "Копия неполная: нет Tanks\\Content. Повторите запуск или проверьте шару",
           });
+          return;
         }
 
         if (!localExePath || !isPathInside(localFolder, localExePath)) {
