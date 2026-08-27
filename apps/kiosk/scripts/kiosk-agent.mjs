@@ -261,7 +261,19 @@ function persistKioskJsonField(patch) {
   }
 }
 
+function normalizeRobocopyCode(raw) {
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return 16;
+  // Task Scheduler status codes — not robocopy exit codes
+  if (n === 267009 || n === 267008 || n === 267011) return -1;
+  if (n >= 0 && n <= 16) return n;
+  return 16;
+}
+
 function robocopyErrorMessage(code, uncFolder) {
+  if (code === 267009 || code === 267008) {
+    return "Копирование прервано — задача не успела завершиться";
+  }
   if (code === 16) {
     return `Папка недоступна на шаре: ${uncFolder}. Проверьте UNC в Настройках и доступ пользователя за консолью`;
   }
@@ -809,17 +821,31 @@ const healthServer = http.createServer(async (req, res) => {
               "$principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited\n" +
               "Register-ScheduledTask -TaskName $task -Action $action -Settings $settings -Principal $principal -Force | Out-Null\n" +
               "Start-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue | Out-Null\n" +
-              "for ($i=0; $i -lt 10800; $i++) {\n" +
+              "for ($i=0; $i -lt 21600; $i++) {\n" +
+              "  if (Test-Path -LiteralPath $codeOut) {\n" +
+              "    try {\n" +
+              "      $raw = (Get-Content -LiteralPath $codeOut -Raw).Trim()\n" +
+              "      if ($raw -match '^\\d+$' -and [int]$raw -le 16) { break }\n" +
+              "    } catch {}\n" +
+              "  }\n" +
               "  $info = Get-ScheduledTaskInfo -TaskName $task -ErrorAction SilentlyContinue\n" +
-              "  if ($info -and $info.State -ne 'Running') { break }\n" +
+              "  if ($info -and $info.State -eq 'Running') {\n" +
+              "    Start-Sleep -Milliseconds 500\n" +
+              "    continue\n" +
+              "  }\n" +
+              "  if ($info -and $info.State -ne 'Running') {\n" +
+              "    Start-Sleep -Seconds 2\n" +
+              "    if (Test-Path -LiteralPath $codeOut) { break }\n" +
+              "    if ($i -gt 20) { break }\n" +
+              "  }\n" +
               "  Start-Sleep -Milliseconds 500\n" +
               "}\n" +
-              "Start-Sleep -Milliseconds 400\n" +
-              "$info = Get-ScheduledTaskInfo -TaskName $task -ErrorAction SilentlyContinue\n" +
               "$code = 16\n" +
-              "if ($info -and ($null -ne $info.LastTaskResult)) { $code = [int]$info.LastTaskResult }\n" +
               "if (Test-Path -LiteralPath $codeOut) {\n" +
-              "  try { $code = [int](Get-Content -LiteralPath $codeOut -Raw).Trim() } catch {}\n" +
+              "  try {\n" +
+              "    $n = [int](Get-Content -LiteralPath $codeOut -Raw).Trim()\n" +
+              "    if ($n -ge 0 -and $n -le 16) { $code = $n }\n" +
+              "  } catch {}\n" +
               "}\n" +
               "Set-Content -LiteralPath $codeOut -Value ([string]$code) -Encoding ASCII -NoNewline\n" +
               "try { Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue | Out-Null } catch {}\n";
@@ -828,8 +854,7 @@ const healthServer = http.createServer(async (req, res) => {
             ps.on("close", () => {
               try {
                 const rawCode = fs.readFileSync(codeFile, "utf8").trim();
-                const n = Number(rawCode);
-                resolve(Number.isFinite(n) ? n : 16);
+                resolve(normalizeRobocopyCode(rawCode));
               } catch {
                 resolve(16);
               } finally {
@@ -863,6 +888,16 @@ const healthServer = http.createServer(async (req, res) => {
             clearInterval(progressIv);
           }
           okCopy = robocode >= 0 && robocode <= 7;
+          if (robocode === -1) {
+            okCopy = false;
+            patchGameCopy({
+              status: "error",
+              folder: localName,
+              message: "Копирование прервано до завершения",
+            });
+            gameLaunchInProgress = false;
+            return;
+          }
           if (!okCopy) {
             console.warn(`[stella-agent] robocopy code=${robocode} unc=${uncFolder}`);
           }
