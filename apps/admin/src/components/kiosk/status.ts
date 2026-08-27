@@ -15,8 +15,14 @@ export function probeLabel(status: KioskDto["probeStatus"]) {
 export function kioskHasProblem(k: KioskDto) {
   return (
     k.installStatus === "error" ||
+    k.gameCopy?.status === "error" ||
     k.probeStatus === "unreachable" ||
     k.probeStatus === "no_software" ||
     k.syncStatus === "error"
   );
+}
+
+export function kioskGameBusy(k: KioskDto) {
+  const s = k.gameCopy?.status;
+  return s === "copying" || s === "launching" || s === "running";
 }

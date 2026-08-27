@@ -7,6 +7,7 @@ import { prisma } from "./prisma.js";
 import { config } from "./config.js";
 import { getEffectiveDeploy } from "./deployCredentials.js";
 import { mapKiosk, probeKioskById } from "./kioskProbe.js";
+import { enrichKioskDto } from "./kioskDtoEnrich.js";
 import { broadcastKioskUpsert } from "./monitorHub.js";
 import { getSiteNetworkSettings, resolveKioskNetwork } from "./networkSettings.js";
 import {
@@ -72,7 +73,7 @@ async function setInstall(
       },
       include: { exhibit: { select: { title: true } } },
     });
-    const dto = mapKiosk(k);
+    const dto = enrichKioskDto(mapKiosk(k));
     broadcastKioskUpsert(dto);
     return dto;
   } catch {
@@ -120,7 +121,7 @@ export async function cancelKioskInstall(id: string) {
 
   if (kiosk.installStatus !== "running" && kiosk.installStatus !== "queued" && !job) {
     cancelRequested.delete(id);
-    return mapKiosk(kiosk);
+    return enrichKioskDto(mapKiosk(kiosk));
   }
 
   return setInstall(id, "idle", "idle", "Установка отменена");

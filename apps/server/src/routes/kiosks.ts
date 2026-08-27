@@ -309,7 +309,7 @@ export async function registerKioskRoutes(app: FastifyInstance) {
         },
         include: { exhibit: { select: { title: true } } },
       });
-      const dto = mapKiosk(k);
+      const dto = enrichKioskDto(mapKiosk(k));
       broadcastKioskUpsert(dto);
       void probeKioskById(k.id);
       if (body.installSoftware) {
@@ -357,7 +357,7 @@ export async function registerKioskRoutes(app: FastifyInstance) {
           data,
           include: { exhibit: { select: { title: true } } },
         });
-        const dto = mapKiosk(k);
+        const dto = enrichKioskDto(mapKiosk(k));
         broadcastKioskUpsert(dto);
         if (body.exhibitId !== undefined) {
           broadcastContentSync({ reason: "kiosk-exhibit", exhibitId: body.exhibitId });
@@ -404,7 +404,7 @@ export async function registerKioskRoutes(app: FastifyInstance) {
         },
         include: { exhibit: { select: { title: true } } },
       });
-      const dto = mapKiosk(queued);
+      const dto = enrichKioskDto(mapKiosk(queued));
       broadcastKioskUpsert(dto);
       void startKioskInstall(id);
       return dto;

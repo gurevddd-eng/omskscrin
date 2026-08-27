@@ -5,6 +5,9 @@ import { getDeployMeta } from "./deployMeta.js";
 import { broadcastKioskUpsert } from "./monitorHub.js";
 import { getProbeIntervalMs, getProbeTimeoutMs } from "./networkSettings.js";
 import { getSoftwareUpdatePending } from "./softwareUpdatePending.js";
+import { setGameCopyState, setInstalledGames } from "./gameCopyState.js";
+import { enrichKioskDto } from "./kioskDtoEnrich.js";
+import type { GameCopyDto } from "@stella/shared";
 import type { InstallStatus, ProbeStatus, SyncStatus } from "@prisma/client";
 
 function isOnline(lastSeenAt: Date | null) {
@@ -114,7 +117,31 @@ type HealthPayload = {
   softwareVersion?: string;
   contentVersion?: string | null;
   syncStatus?: SyncStatus;
+  gameCopy?: GameCopyDto;
+  installedGames?: string[];
 };
+
+function ingestGameHealth(
+  kioskId: string,
+  hostname: string,
+  health: HealthPayload | null | undefined
+) {
+  if (!health?.ok) return;
+  if (health.gameCopy?.status) {
+    setGameCopyState(kioskId, hostname, {
+      status: health.gameCopy.status,
+      folder: health.gameCopy.folder ?? null,
+      percent: health.gameCopy.percent ?? null,
+      copiedBytes: health.gameCopy.copiedBytes ?? null,
+      totalBytes: health.gameCopy.totalBytes ?? null,
+      message: health.gameCopy.message ?? null,
+      updatedAt: health.gameCopy.updatedAt ?? new Date().toISOString(),
+    });
+  }
+  if (health.installedGames) {
+    setInstalledGames(kioskId, hostname, health.installedGames);
+  }
+}
 
 async function fetchHealth(hostname: string, port: number): Promise<HealthPayload | null> {
   const controller = new AbortController();
@@ -153,12 +180,13 @@ export async function probeKioskById(id: string) {
       data: { probeStatus, probeMessage, lastProbeAt: new Date() },
       include: { exhibit: { select: { title: true } } },
     });
-    const dto = mapKiosk(updated);
+    const dto = enrichKioskDto(mapKiosk(updated));
     broadcastKioskUpsert(dto);
     return dto;
   }
 
   const health = await fetchHealth(kiosk.hostname, kiosk.healthPort);
+  ingestGameHealth(kiosk.kioskId, kiosk.hostname, health);
   if (!health?.ok) {
     probeStatus = "no_software";
     const hadInstall = Boolean(kiosk.lastInstallAt) || kiosk.installStatus === "ok";
@@ -191,7 +219,7 @@ export async function probeKioskById(id: string) {
     },
     include: { exhibit: { select: { title: true } } },
   });
-  const dto = mapKiosk(updated);
+  const dto = enrichKioskDto(mapKiosk(updated));
   broadcastKioskUpsert(dto);
   return dto;
 }

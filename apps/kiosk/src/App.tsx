@@ -316,6 +316,7 @@ export function App({ preview }: { preview?: KioskPreview } = {}) {
   const [nativeShell, setNativeShell] = useState(false);
   const [gameBusy, setGameBusy] = useState(false);
   const [gameError, setGameError] = useState<string | null>(null);
+  const [gamePhase, setGamePhase] = useState<string | null>(null);
   const previewMode = Boolean(preview);
 
   const bumpActivity = useCallback(() => {
@@ -417,6 +418,7 @@ export function App({ preview }: { preview?: KioskPreview } = {}) {
     const game = state?.manifest.exhibit?.game;
     if (!game?.exe || !game.shareFolder) return;
     setGameError(null);
+    setGamePhase("copying");
     setGameBusy(true);
     bumpActivity();
     try {
@@ -426,16 +428,62 @@ export function App({ preview }: { preview?: KioskPreview } = {}) {
         body: JSON.stringify({ folder: game.shareFolder, exe: game.exe }),
       });
       const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
-      if (!res.ok || body.ok === false) {
+      if (res.status === 423) {
+        throw new Error(body.error || "Киоск занят, попробуйте позже");
+      }
+      if (!res.ok && res.status !== 202) {
+        throw new Error(body.error || "Не удалось запустить игру");
+      }
+      if (body.ok === false) {
         throw new Error(body.error || "Не удалось запустить игру");
       }
     } catch (e) {
       setGameError(e instanceof Error ? e.message : "Не удалось запустить игру");
-    } finally {
       setGameBusy(false);
+      setGamePhase(null);
       bumpActivity();
     }
   }, [previewMode, gameBusy, bumpActivity, state, config]);
+
+  useEffect(() => {
+    if (!config || previewMode || !gameBusy) return;
+    let stopped = false;
+    const poll = async () => {
+      try {
+        const hr = await fetch(`http://127.0.0.1:${config.healthPort}/health`, { cache: "no-store" });
+        if (!hr.ok || stopped) return;
+        const health = (await hr.json()) as {
+          gameCopy?: { status?: string; message?: string | null };
+        };
+        const st = String(health.gameCopy?.status || "");
+        if (st) setGamePhase(st);
+        if (st === "idle") {
+          setGameBusy(false);
+          setGamePhase(null);
+        } else if (st === "error") {
+          setGameError(health.gameCopy?.message || "Ошибка игры");
+          setGameBusy(false);
+          setGamePhase(null);
+        }
+      } catch {
+        /* agent restarting */
+      }
+    };
+    void poll();
+    const id = window.setInterval(() => void poll(), 1500);
+    return () => {
+      stopped = true;
+      window.clearInterval(id);
+    };
+  }, [config, previewMode, gameBusy]);
+
+  const gameButtonLabel = (() => {
+    if (!gameBusy) return state?.manifest.exhibit?.game?.title || "Играть";
+    if (gamePhase === "copying") return "Копирование игры…";
+    if (gamePhase === "launching") return "Запуск игры…";
+    if (gamePhase === "running") return "Игра запущена…";
+    return "Подготовка…";
+  })();
 
   useEffect(() => {
     if (!config || previewMode) return;
@@ -1198,7 +1246,7 @@ export function App({ preview }: { preview?: KioskPreview } = {}) {
                       disabled={gameBusy}
                       onClick={() => void startGame()}
                     >
-                      {gameBusy ? "Игра запущена…" : exhibit.game.title || "Играть"}
+                      {gameButtonLabel}
                     </button>
                   ) : exhibit?.game && previewMode ? (
                     <button type="button" className="btn-ghost btn-ghost--home" disabled>

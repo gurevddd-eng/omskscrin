@@ -55,6 +55,7 @@ type Lane = {
   steps?: { id: string; label: string }[];
   active?: number;
   message?: string | null;
+  progressPct?: number | null;
 };
 
 function buildInstallLane(k: KioskDto): Lane | null {
@@ -191,6 +192,7 @@ function buildGameLane(k: KioskDto): Lane | null {
     steps: GAME_COPY_STATUS_STEPS,
     active: busy || failed ? active : undefined,
     message: parts.length ? parts.join(" · ") : null,
+    progressPct: status === "copying" && gc?.percent != null ? gc.percent : null,
   };
 }
 
@@ -286,6 +288,12 @@ function ProcessLane({ lane }: { lane: Lane }) {
       ) : null}
 
       {lane.message ? <p className="kx-life__lane-msg">{lane.message}</p> : null}
+
+      {lane.tone === "run" && lane.id === "game" && lane.progressPct != null ? (
+        <div className="kx-life__progress" role="progressbar" aria-valuenow={lane.progressPct} aria-valuemin={0} aria-valuemax={100}>
+          <span className="kx-life__progress-bar" style={{ width: `${lane.progressPct}%` }} />
+        </div>
+      ) : null}
     </article>
   );
 }

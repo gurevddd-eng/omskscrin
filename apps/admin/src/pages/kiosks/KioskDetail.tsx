@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { KioskDto } from "@stella/shared";
-import { INSTALL_STATUS_LABEL, PROBE_STATUS_LABEL } from "@stella/shared";
+import { INSTALL_STATUS_LABEL, PROBE_STATUS_LABEL, GAME_COPY_STATUS_LABEL } from "@stella/shared";
 import { KioskLifecyclePanel } from "../../components/kiosk/KioskLifecyclePanel";
 import { resolveOtaState } from "../../components/kiosk/KioskOtaStatus";
 import { probeBadgeClass } from "../../components/kiosk/status";
@@ -47,6 +47,10 @@ export function KioskDetail(props: KioskDetailProps) {
   const busyPolicyClear = k.policyClearStatus === "running";
   const busyUiStart = k.uiStartStatus === "running";
   const busyUiStop = k.uiStopStatus === "running";
+  const busyGame =
+    k.gameCopy?.status === "copying" ||
+    k.gameCopy?.status === "launching" ||
+    k.gameCopy?.status === "running";
   const locked =
     props.installing ||
     props.starting ||
@@ -61,7 +65,8 @@ export function KioskDetail(props: KioskDetailProps) {
     props.probing ||
     busyPolicyClear ||
     busyUiStart ||
-    busyUiStop;
+    busyUiStop ||
+    busyGame;
 
   const swLocal = k.softwareVersion || null;
   const swTarget = props.targetSoftwareVersion || k.otaTarget || null;
@@ -92,6 +97,11 @@ export function KioskDetail(props: KioskDetailProps) {
               {k.online ? "онлайн" : "офлайн"}
             </span>
             <span className="badge">{INSTALL_STATUS_LABEL[k.installStatus]}</span>
+            {busyGame && k.gameCopy?.status ? (
+              <span className="badge warn">{GAME_COPY_STATUS_LABEL[k.gameCopy.status]}</span>
+            ) : k.gameCopy?.status === "error" ? (
+              <span className="badge error">{GAME_COPY_STATUS_LABEL.error}</span>
+            ) : null}
           </div>
           {props.hiddenByFilter ? (
             <p className="kx-head__filter-hint">Скрыт текущим фильтром / поиском — карточка открыта</p>

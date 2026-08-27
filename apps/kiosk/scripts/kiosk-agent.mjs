@@ -275,6 +275,41 @@ function formatBytes(n) {
   return `${(n / (1024 * 1024 * 1024)).toFixed(2)} ГБ`;
 }
 
+function findLocalGameExe(localFolder, exeRel) {
+  const safeExeRel = String(exeRel || "").replace(/[\/\\]+/g, path.sep);
+  const candidates = [
+    path.resolve(path.join(localFolder, safeExeRel)),
+    path.resolve(path.join(localFolder, path.basename(safeExeRel))),
+  ];
+  let localExePath = candidates.find((p) => isPathInside(localFolder, p) && fs.existsSync(p)) || null;
+  if (!localExePath) {
+    const want = path.basename(safeExeRel).toLowerCase();
+    const stack = [localFolder];
+    let depth = 0;
+    while (stack.length && depth < 200) {
+      depth += 1;
+      const dir = stack.pop();
+      let entries = [];
+      try {
+        entries = fs.readdirSync(dir, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      for (const e of entries) {
+        const full = path.join(dir, e.name);
+        if (e.isFile() && e.name.toLowerCase() === want) {
+          localExePath = full;
+          break;
+        }
+        if (e.isDirectory() && !e.name.startsWith(".")) stack.push(full);
+      }
+      if (localExePath) break;
+    }
+  }
+  if (!localExePath || !isPathInside(localFolder, localExePath)) return null;
+  return localExePath;
+}
+
 function patchGameCopy(partial) {
   gameCopy = {
     ...gameCopy,
@@ -451,6 +486,7 @@ const healthServer = http.createServer(async (req, res) => {
       softwareVersion,
       updateInProgress,
       gameCopy,
+      installedGames: listInstalledGames(),
       contentVersion: live.contentVersion,
       syncStatus: live.syncStatus,
       syncMessage: live.syncMessage,
@@ -577,61 +613,80 @@ const healthServer = http.createServer(async (req, res) => {
       raw += chunk;
       if (raw.length > 64_000) req.destroy();
     });
-    req.on("end", async () => {
+    req.on("end", () => {
       if (updateInProgress || gameLaunchInProgress || isStopRequested()) {
         sendJson(res, 423, { ok: false, error: "Киоск занят, попробуйте позже" });
         return;
       }
 
+      let body;
       try {
-        const body = JSON.parse(raw || "{}");
-        const folder = String(body.folder || "").trim();
-        const exe = String(body.exe || "").trim();
-        if (!folder || !exe) {
-          sendJson(res, 400, { ok: false, error: "Не указаны папка и файл игры" });
-          return;
-        }
+        body = JSON.parse(raw || "{}");
+      } catch {
+        sendJson(res, 400, { ok: false, error: "Некорректный JSON" });
+        return;
+      }
 
-        const configuredUnc =
-          String(fileCfg.gameShareUnc || process.env.STELLA_GAME_SHARE_UNC || liveGameShareUnc || gameShareUncRoot || "").trim() ||
-          "\\\\HYDRALISK3\\Patriot\\Игры парк победы";
-        const resolved = resolveGameUncFolder(configuredUnc, folder);
-        const uncFolder = resolved.full;
-        const localName = resolved.localName || resolved.folder || "game";
-        if (!uncFolder || !resolved.folder) {
-          sendJson(res, 400, { ok: false, error: "Не удалось собрать путь к папке игры" });
-          return;
-        }
+      const folder = String(body.folder || "").trim();
+      const exe = String(body.exe || "").trim();
+      if (!folder || !exe) {
+        sendJson(res, 400, { ok: false, error: "Не указаны папка и файл игры" });
+        return;
+      }
 
-        fs.mkdirSync(omskekranRoot, { recursive: true });
-        fs.mkdirSync(gamesRoot, { recursive: true });
+      const configuredUnc =
+        String(fileCfg.gameShareUnc || process.env.STELLA_GAME_SHARE_UNC || liveGameShareUnc || gameShareUncRoot || "").trim() ||
+        "\\\\HYDRALISK3\\Patriot\\Игры парк победы";
+      const resolved = resolveGameUncFolder(configuredUnc, folder);
+      const uncFolder = resolved.full;
+      const localName = resolved.localName || resolved.folder || "game";
+      if (!uncFolder || !resolved.folder) {
+        sendJson(res, 400, { ok: false, error: "Не удалось собрать путь к папке игры" });
+        return;
+      }
 
-        const localFolder = path.join(gamesRoot, localName);
-        fs.mkdirSync(localFolder, { recursive: true });
+      fs.mkdirSync(omskekranRoot, { recursive: true });
+      fs.mkdirSync(gamesRoot, { recursive: true });
 
-        // Strip accidental folder/UNC prefix from exe (admin sometimes pastes full path)
-        let exeRel = exe.replace(/\//g, "\\");
-        const folderNorm = resolved.folder.replace(/\//g, "\\");
-        if (exeRel.toLowerCase().startsWith(uncFolder.toLowerCase() + "\\")) {
-          exeRel = exeRel.slice(uncFolder.length).replace(/^[\\\/]+/, "");
-        } else if (folderNorm && exeRel.toLowerCase().startsWith(folderNorm.toLowerCase() + "\\")) {
-          exeRel = exeRel.slice(folderNorm.length).replace(/^[\\\/]+/, "");
-        } else if (exeRel.toLowerCase().startsWith(localName.toLowerCase() + "\\")) {
-          exeRel = exeRel.slice(localName.length).replace(/^[\\\/]+/, "");
-        }
+      const localFolder = path.join(gamesRoot, localName);
+      fs.mkdirSync(localFolder, { recursive: true });
 
-        gameLaunchInProgress = true;
-        patchGameCopy({
-          status: "copying",
-          folder: localName,
-          percent: null,
-          copiedBytes: null,
-          totalBytes: null,
-          message: `Копирование с ${uncFolder}`,
-        });
+      let exeRel = exe.replace(/\//g, "\\");
+      const folderNorm = resolved.folder.replace(/\//g, "\\");
+      if (exeRel.toLowerCase().startsWith(uncFolder.toLowerCase() + "\\")) {
+        exeRel = exeRel.slice(uncFolder.length).replace(/^[\\\/]+/, "");
+      } else if (folderNorm && exeRel.toLowerCase().startsWith(folderNorm.toLowerCase() + "\\")) {
+        exeRel = exeRel.slice(folderNorm.length).replace(/^[\\\/]+/, "");
+      } else if (exeRel.toLowerCase().startsWith(localName.toLowerCase() + "\\")) {
+        exeRel = exeRel.slice(localName.length).replace(/^[\\\/]+/, "");
+      }
 
-        // SYSTEM cannot access domain SMB shares — copy as interactive console user.
-        const runRobocopyAsUser = () =>
+      if (updateInProgress || isStopRequested()) {
+        sendJson(res, 423, { ok: false, error: "Киоск занят, попробуйте позже" });
+        return;
+      }
+
+      gameLaunchInProgress = true;
+      sendJson(res, 202, { ok: true, accepted: true });
+      void (async () => {
+        try {
+        let localExePath = findLocalGameExe(localFolder, exeRel);
+        let copiedFinal = localExePath ? folderBytes(localFolder) : 0;
+        let robocode = 0;
+        let okCopy = true;
+
+        if (!localExePath) {
+          patchGameCopy({
+            status: "copying",
+            folder: localName,
+            percent: null,
+            copiedBytes: null,
+            totalBytes: null,
+            message: `Копирование с ${uncFolder}`,
+          });
+
+          // SYSTEM cannot access domain SMB shares — copy as interactive console user.
+          const runRobocopyAsUser = () =>
           new Promise((resolve) => {
             const codeFile = path.join(omskekranRoot, "_robocopy_exit.txt");
             try {
@@ -714,74 +769,55 @@ const healthServer = http.createServer(async (req, res) => {
             });
           });
 
-        const progressIv = setInterval(() => {
-          try {
-            const copied = folderBytes(localFolder);
-            patchGameCopy({
-              status: "copying",
-              folder: localName,
-              copiedBytes: copied,
-              percent: null,
-              message: `Копирование · ${formatBytes(copied)}`,
-            });
-          } catch {
-            /* ignore */
-          }
-        }, 2000);
-
-        let robocode = 16;
-        try {
-          robocode = await runRobocopyAsUser();
-        } finally {
-          clearInterval(progressIv);
-        }
-        // Robocopy: 0..7 are success (0=no change, 1..7 are copied/needs attention)
-        const okCopy = robocode >= 0 && robocode <= 7;
-        if (!okCopy) {
-          console.warn(`[stella-agent] robocopy code=${robocode} unc=${uncFolder}`);
-        }
-
-        const copiedFinal = folderBytes(localFolder);
-        patchGameCopy({
-          status: okCopy ? "copying" : "error",
-          folder: localName,
-          copiedBytes: copiedFinal,
-          percent: okCopy ? 100 : null,
-          message: okCopy
-            ? `Скопировано · ${formatBytes(copiedFinal)}`
-            : `Ошибка копирования (код ${robocode})`,
-        });
-
-        const safeExeRel = exeRel.replace(/[\/\\]+/g, path.sep);
-        const candidates = [
-          path.resolve(path.join(localFolder, safeExeRel)),
-          path.resolve(path.join(localFolder, path.basename(safeExeRel))),
-        ];
-        let localExePath = candidates.find((p) => isPathInside(localFolder, p) && fs.existsSync(p)) || null;
-        if (!localExePath) {
-          // Fallback: search by basename under copied folder
-          const want = path.basename(safeExeRel).toLowerCase();
-          const stack = [localFolder];
-          let depth = 0;
-          while (stack.length && depth < 200) {
-            depth += 1;
-            const dir = stack.pop();
-            let entries = [];
+          const progressIv = setInterval(() => {
             try {
-              entries = fs.readdirSync(dir, { withFileTypes: true });
+              const copied = folderBytes(localFolder);
+              patchGameCopy({
+                status: "copying",
+                folder: localName,
+                copiedBytes: copied,
+                percent: null,
+                message: `Копирование · ${formatBytes(copied)}`,
+              });
             } catch {
-              continue;
+              /* ignore */
             }
-            for (const e of entries) {
-              const full = path.join(dir, e.name);
-              if (e.isFile() && e.name.toLowerCase() === want) {
-                localExePath = full;
-                break;
-              }
-              if (e.isDirectory() && !e.name.startsWith(".")) stack.push(full);
-            }
-            if (localExePath) break;
+          }, 2000);
+
+          try {
+            robocode = await runRobocopyAsUser();
+          } finally {
+            clearInterval(progressIv);
           }
+          okCopy = robocode >= 0 && robocode <= 7;
+          if (!okCopy) {
+            console.warn(`[stella-agent] robocopy code=${robocode} unc=${uncFolder}`);
+          }
+
+          copiedFinal = folderBytes(localFolder);
+          patchGameCopy({
+            status: okCopy ? "copying" : "error",
+            folder: localName,
+            copiedBytes: copiedFinal,
+            percent: okCopy ? 100 : null,
+            message: okCopy
+              ? `Скопировано · ${formatBytes(copiedFinal)}`
+              : `Ошибка копирования (код ${robocode})`,
+          });
+          if (!okCopy) {
+            gameLaunchInProgress = false;
+            return;
+          }
+          localExePath = findLocalGameExe(localFolder, exeRel);
+        } else {
+          patchGameCopy({
+            status: "launching",
+            folder: localName,
+            percent: 100,
+            copiedBytes: copiedFinal,
+            totalBytes: null,
+            message: `На диске · ${path.basename(localExePath)}`,
+          });
         }
 
         if (!localExePath || !isPathInside(localFolder, localExePath)) {
@@ -792,13 +828,9 @@ const healthServer = http.createServer(async (req, res) => {
             percent: null,
             copiedBytes: copiedFinal,
             totalBytes: null,
-            message: `Игра не найдена (robocopy=${robocode})`,
-          });
-          sendJson(res, 404, {
-            ok: false,
-            error: okCopy
-              ? `Игра не найдена: нет файла «${exeRel}» в «${uncFolder}»`
-              : `Нет доступа к шаре или игра не скопирована (код ${robocode}). Проверьте «${uncFolder}» от имени пользователя за консолью`,
+            message: okCopy
+              ? `Игра не найдена: нет «${exeRel}»`
+              : `Нет доступа к шаре (код ${robocode})`,
           });
           return;
         }
@@ -957,7 +989,6 @@ const healthServer = http.createServer(async (req, res) => {
           message: "Установлена на диске",
         });
         gameLaunchInProgress = false;
-        sendJson(res, 200, { ok: true });
       } catch (e) {
         gameLaunchInProgress = false;
         patchGameCopy({
@@ -968,8 +999,10 @@ const healthServer = http.createServer(async (req, res) => {
           totalBytes: null,
           message: e instanceof Error ? e.message : String(e),
         });
-        sendJson(res, 500, { ok: false, error: e instanceof Error ? e.message : String(e) });
       }
+      })().catch((e) => {
+        console.warn("[stella-agent] game launch failed:", e instanceof Error ? e.message : e);
+      });
     });
     return;
   }
