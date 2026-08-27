@@ -366,6 +366,12 @@ export interface KioskDto {
   gameCopy?: GameCopyDto | null;
   /** Local game folders already present under ProgramData\\omskekran\\games */
   installedGames?: string[] | null;
+  /** Bound exhibit game config (for admin install button). */
+  exhibitGame?: {
+    title: string;
+    shareFolder: string;
+    exe: string;
+  } | null;
 }
 
 export interface HeartbeatRequest {

@@ -418,7 +418,7 @@ export function App({ preview }: { preview?: KioskPreview } = {}) {
     const game = state?.manifest.exhibit?.game;
     if (!game?.exe || !game.shareFolder) return;
     setGameError(null);
-    setGamePhase("copying");
+    setGamePhase("launching");
     setGameBusy(true);
     bumpActivity();
     try {
@@ -430,6 +430,9 @@ export function App({ preview }: { preview?: KioskPreview } = {}) {
       const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
       if (res.status === 423) {
         throw new Error(body.error || "Киоск занят, попробуйте позже");
+      }
+      if (res.status === 404 || res.status === 409) {
+        throw new Error(body.error || "Игра не установлена. Обратитесь к администратору");
       }
       if (!res.ok && res.status !== 202) {
         throw new Error(body.error || "Не удалось запустить игру");
@@ -479,7 +482,6 @@ export function App({ preview }: { preview?: KioskPreview } = {}) {
 
   const gameButtonLabel = (() => {
     if (!gameBusy) return state?.manifest.exhibit?.game?.title || "Играть";
-    if (gamePhase === "copying") return "Копирование игры…";
     if (gamePhase === "launching") return "Запуск игры…";
     if (gamePhase === "running") return "Игра запущена…";
     return "Подготовка…";

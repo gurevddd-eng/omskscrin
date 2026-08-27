@@ -21,6 +21,8 @@ export type KioskDetailProps = {
   pushingConfig: boolean;
   clearingPolicies: boolean;
   updatingSoftware: boolean;
+  installingGame: boolean;
+  uninstallingGame: boolean;
   binding: boolean;
   removingAdmin: boolean;
   removingFull: boolean;
@@ -34,6 +36,8 @@ export type KioskDetailProps = {
   onStart: (id: string) => void;
   onStop: (id: string) => void;
   onSoftwareUpdate: (id: string) => void;
+  onInstallGame: (id: string) => void;
+  onUninstallGame: (id: string) => void;
   onRemoveFromAdmin: (id: string) => void;
   onRemoveFull: (id: string) => void;
   onSaveNetwork: (id: string, data: { healthPort: number; uiPort: number; serverUrl: string }) => void;
@@ -51,11 +55,20 @@ export function KioskDetail(props: KioskDetailProps) {
     k.gameCopy?.status === "copying" ||
     k.gameCopy?.status === "launching" ||
     k.gameCopy?.status === "running";
+  const exhibitGame = k.exhibitGame;
+  const gameFolder = exhibitGame?.shareFolder || null;
+  const gameInstalled = Boolean(
+    gameFolder &&
+      Array.isArray(k.installedGames) &&
+      k.installedGames.some((g) => g.toLowerCase() === gameFolder.toLowerCase())
+  );
   const locked =
     props.installing ||
     props.starting ||
     props.stopping ||
     props.updatingSoftware ||
+    props.installingGame ||
+    props.uninstallingGame ||
     props.binding ||
     props.removingAdmin ||
     props.removingFull ||
@@ -172,6 +185,41 @@ export function KioskDetail(props: KioskDetailProps) {
                       : "…"
                     : "Обновить ПО"}
                 </button>
+                <button
+                  type="button"
+                  className="btn secondary"
+                  disabled={
+                    locked ||
+                    !exhibitGame ||
+                    k.probeStatus === "no_software" ||
+                    !k.online
+                  }
+                  title={
+                    !exhibitGame
+                      ? "В экспонате не заданы папка и exe игры"
+                      : gameInstalled
+                        ? `Синхронизировать «${exhibitGame.title}» с шары`
+                        : `Скопировать «${exhibitGame.title}» на киоск`
+                  }
+                  onClick={() => props.onInstallGame(k.id)}
+                >
+                  {props.installingGame || k.gameCopy?.status === "copying"
+                    ? "Игра…"
+                    : gameInstalled
+                      ? "Обновить игру"
+                      : "Установить игру"}
+                </button>
+                {gameInstalled || (k.installedGames && k.installedGames.length > 0) ? (
+                  <button
+                    type="button"
+                    className="btn ghost"
+                    disabled={locked || !exhibitGame}
+                    title="Удалить локальную копию игры с киоска"
+                    onClick={() => props.onUninstallGame(k.id)}
+                  >
+                    {props.uninstallingGame ? "…" : "Удалить игру"}
+                  </button>
+                ) : null}
               </>
             )}
             <button

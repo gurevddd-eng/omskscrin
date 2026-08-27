@@ -416,6 +416,35 @@ function patchGameCopy(partial) {
   void pushHeartbeat();
 }
 
+function normalizeGameExeRel(exe, uncFolder, folderNorm, localName) {
+  let exeRel = String(exe || "").replace(/\//g, "\\").trim();
+  if (!exeRel) return "";
+  const unc = String(uncFolder || "").replace(/\//g, "\\");
+  const folder = String(folderNorm || "").replace(/\//g, "\\");
+  const local = String(localName || "").replace(/\//g, "\\");
+  if (unc && exeRel.toLowerCase().startsWith(unc.toLowerCase() + "\\")) {
+    exeRel = exeRel.slice(unc.length).replace(/^[\\\/]+/, "");
+  } else if (folder && exeRel.toLowerCase().startsWith(folder.toLowerCase() + "\\")) {
+    exeRel = exeRel.slice(folder.length).replace(/^[\\\/]+/, "");
+  } else if (local && exeRel.toLowerCase().startsWith(local.toLowerCase() + "\\")) {
+    exeRel = exeRel.slice(local.length).replace(/^[\\\/]+/, "");
+  }
+  return exeRel;
+}
+
+/** UE/Tanks games need Content; other layouts pass if Tanks folder is absent. */
+function gameContentLooksOk(localFolder) {
+  const tanks = path.join(localFolder, "Tanks");
+  if (!fs.existsSync(tanks)) return true;
+  const contentDir = path.join(tanks, "Content");
+  try {
+    if (!fs.existsSync(contentDir) || !fs.statSync(contentDir).isDirectory()) return false;
+    return fs.readdirSync(contentDir).length > 0;
+  } catch {
+    return false;
+  }
+}
+
 const omskekranRoot = path.join(process.env.ProgramData || "C:\\ProgramData", "omskekran");
 const contentRoot = path.join(omskekranRoot, "content");
 const gamesRoot = path.join(omskekranRoot, "games");
@@ -444,6 +473,194 @@ function spawnPowerShell(extraArgs, opts = {}) {
     windowsHide: true,
     stdio: capture ? ["ignore", "pipe", "pipe"] : "ignore",
     ...rest,
+  });
+}
+
+function resolveConfiguredGameUnc() {
+  return (
+    String(
+      fileCfg.gameShareUnc || process.env.STELLA_GAME_SHARE_UNC || liveGameShareUnc || gameShareUncRoot || ""
+    ).trim() || "\\\\HYDRALISK3\\Patriot\\Игры парк победы"
+  );
+}
+
+function resolveGameInstallPaths(folder, exe) {
+  const configuredUnc = resolveConfiguredGameUnc();
+  const resolved = resolveGameUncFolder(configuredUnc, folder);
+  const uncFolder = resolved.full;
+  const localName = resolved.localName || resolved.folder || "game";
+  if (!uncFolder || !resolved.folder) return null;
+  const localFolder = path.join(gamesRoot, localName);
+  const exeRel = normalizeGameExeRel(exe, uncFolder, resolved.folder, localName);
+  return { uncFolder, localName, localFolder, folderNorm: resolved.folder, exeRel };
+}
+
+/** Robocopy UNC → local as interactive console user. Returns robocopy-ish code 0–16 or -1. */
+function runRobocopyAsUser(uncFolder, localFolder) {
+  return new Promise((resolve) => {
+    const codeFile = path.join(omskekranRoot, "_robocopy_exit.txt");
+    const jobFile = path.join(omskekranRoot, "_robocopy_job.json");
+    const helperPath = ensureRobocopyHelper();
+    try {
+      if (fs.existsSync(codeFile)) fs.unlinkSync(codeFile);
+      fs.writeFileSync(
+        jobFile,
+        JSON.stringify({ src: uncFolder, dst: localFolder, codeOut: codeFile }),
+        "utf8"
+      );
+    } catch {
+      resolve(16);
+      return;
+    }
+    const codeEsc = String(codeFile).replace(/'/g, "''");
+    const jobEsc = String(jobFile).replace(/'/g, "''");
+    const helperEsc = String(helperPath).replace(/'/g, "''");
+    const cachedEsc = String(readCachedConsoleUser() || "").replace(/'/g, "''");
+    const script =
+      "$ErrorActionPreference = 'SilentlyContinue'\n" +
+      "function Resolve-User {\n" +
+      "  $cs = Get-CimInstance Win32_ComputerSystem\n" +
+      "  if ($cs -and $cs.UserName) { return $cs.UserName }\n" +
+      "  $proc = Get-CimInstance Win32_Process -Filter \"Name = 'explorer.exe'\" | Select-Object -First 1\n" +
+      "  if ($proc) {\n" +
+      "    $o = Invoke-CimMethod -InputObject $proc -MethodName GetOwner -ErrorAction SilentlyContinue\n" +
+      "    if ($o -and $o.User) {\n" +
+      "      if ($o.Domain) { return \"$($o.Domain)\\$($o.User)\" }\n" +
+      "      return $o.User\n" +
+      "    }\n" +
+      "  }\n" +
+      "  $cached = '" +
+      cachedEsc +
+      "'\n" +
+      "  if ($cached) { return $cached }\n" +
+      "  return $null\n" +
+      "}\n" +
+      "$user = Resolve-User\n" +
+      "$codeOut = '" +
+      codeEsc +
+      "'\n" +
+      "$job = '" +
+      jobEsc +
+      "'\n" +
+      "$helper = '" +
+      helperEsc +
+      "'\n" +
+      "if (-not $user) { Set-Content -LiteralPath $codeOut -Value '16' -Encoding ASCII -NoNewline; exit 2 }\n" +
+      "if (-not (Test-Path -LiteralPath $job)) { Set-Content -LiteralPath $codeOut -Value '16' -Encoding ASCII -NoNewline; exit 3 }\n" +
+      "$task = 'StellaKioskRoboOnce'\n" +
+      "try { Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue | Out-Null } catch {}\n" +
+      "$arg = '-NoLogo -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"' + $helper + '\" -JobPath \"' + $job + '\"'\n" +
+      "$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $arg\n" +
+      "$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances Parallel -ExecutionTimeLimit (New-TimeSpan -Minutes 180) -Hidden\n" +
+      "$principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited\n" +
+      "Register-ScheduledTask -TaskName $task -Action $action -Settings $settings -Principal $principal -Force | Out-Null\n" +
+      "Start-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue | Out-Null\n" +
+      "for ($i=0; $i -lt 21600; $i++) {\n" +
+      "  if (Test-Path -LiteralPath $codeOut) {\n" +
+      "    try {\n" +
+      "      $raw = (Get-Content -LiteralPath $codeOut -Raw).Trim()\n" +
+      "      if ($raw -match '^\\d+$' -and [int]$raw -le 16) { break }\n" +
+      "    } catch {}\n" +
+      "  }\n" +
+      "  $info = Get-ScheduledTaskInfo -TaskName $task -ErrorAction SilentlyContinue\n" +
+      "  if ($info -and $info.State -eq 'Running') {\n" +
+      "    Start-Sleep -Milliseconds 500\n" +
+      "    continue\n" +
+      "  }\n" +
+      "  if ($info -and $info.State -ne 'Running') {\n" +
+      "    Start-Sleep -Seconds 2\n" +
+      "    if (Test-Path -LiteralPath $codeOut) { break }\n" +
+      "    if ($i -gt 20) { break }\n" +
+      "  }\n" +
+      "  Start-Sleep -Milliseconds 500\n" +
+      "}\n" +
+      "$code = 16\n" +
+      "if (Test-Path -LiteralPath $codeOut) {\n" +
+      "  try {\n" +
+      "    $n = [int](Get-Content -LiteralPath $codeOut -Raw).Trim()\n" +
+      "    if ($n -ge 0 -and $n -le 16) { $code = $n }\n" +
+      "  } catch {}\n" +
+      "}\n" +
+      "Set-Content -LiteralPath $codeOut -Value ([string]$code) -Encoding ASCII -NoNewline\n" +
+      "try { Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue | Out-Null } catch {}\n";
+    const ps = spawnPowerShell(["-Command", script]);
+    ps.on("error", () => resolve(16));
+    ps.on("close", () => {
+      try {
+        const rawCode = fs.readFileSync(codeFile, "utf8").trim();
+        resolve(normalizeRobocopyCode(rawCode));
+      } catch {
+        resolve(16);
+      } finally {
+        try {
+          fs.unlinkSync(codeFile);
+        } catch {
+          /* ignore */
+        }
+      }
+    });
+  });
+}
+
+/** Best-effort source size for percent (console user; SYSTEM cannot see domain UNC). */
+function measureUncBytesAsUser(uncFolder) {
+  return new Promise((resolve) => {
+    const outFile = path.join(omskekranRoot, "_game_src_bytes.txt");
+    try {
+      if (fs.existsSync(outFile)) fs.unlinkSync(outFile);
+    } catch {
+      /* ignore */
+    }
+    const outEsc = String(outFile).replace(/'/g, "''");
+    const srcEsc = String(uncFolder).replace(/'/g, "''");
+    const cachedEsc = String(readCachedConsoleUser() || "").replace(/'/g, "''");
+    const script =
+      "$ErrorActionPreference = 'SilentlyContinue'\n" +
+      "function Resolve-User {\n" +
+      "  $cs = Get-CimInstance Win32_ComputerSystem\n" +
+      "  if ($cs -and $cs.UserName) { return $cs.UserName }\n" +
+      "  $cached = '" +
+      cachedEsc +
+      "'\n" +
+      "  if ($cached) { return $cached }\n" +
+      "  return $null\n" +
+      "}\n" +
+      "$user = Resolve-User\n" +
+      "$out = '" +
+      outEsc +
+      "'\n" +
+      "$src = '" +
+      srcEsc +
+      "'\n" +
+      "if (-not $user) { Set-Content -LiteralPath $out -Value '0' -Encoding ASCII -NoNewline; exit 2 }\n" +
+      "$ps1 = Join-Path $env:ProgramData 'omskekran\\_measure_src.ps1'\n" +
+      "Set-Content -LiteralPath $ps1 -Value (\"`$s='\" + $src + \"'; `$o='\" + $out + \"'; if (Test-Path -LiteralPath `$s) { `$n=(Get-ChildItem -LiteralPath `$s -Recurse -File -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum; if (-not `$n) { `$n=0 }; Set-Content -LiteralPath `$o -Value ([string][int64]`$n) -Encoding ASCII -NoNewline } else { Set-Content -LiteralPath `$o -Value '0' -Encoding ASCII -NoNewline }\") -Encoding UTF8\n" +
+      "$task = 'StellaKioskMeasureSrc'\n" +
+      "try { Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue | Out-Null } catch {}\n" +
+      "$arg = '-NoLogo -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"' + $ps1 + '\"'\n" +
+      "$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $arg\n" +
+      "$settings = New-ScheduledTaskSettingsSet -Hidden -ExecutionTimeLimit (New-TimeSpan -Minutes 10)\n" +
+      "$principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited\n" +
+      "Register-ScheduledTask -TaskName $task -Action $action -Settings $settings -Principal $principal -Force | Out-Null\n" +
+      "Start-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue | Out-Null\n" +
+      "for ($i=0; $i -lt 600; $i++) {\n" +
+      "  if (Test-Path -LiteralPath $out) { break }\n" +
+      "  $info = Get-ScheduledTaskInfo -TaskName $task -ErrorAction SilentlyContinue\n" +
+      "  if ($info -and $info.State -ne 'Running' -and $i -gt 2) { break }\n" +
+      "  Start-Sleep -Milliseconds 500\n" +
+      "}\n" +
+      "try { Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue | Out-Null } catch {}\n";
+    const ps = spawnPowerShell(["-Command", script]);
+    const finish = () => {
+      try {
+        const n = Number(fs.readFileSync(outFile, "utf8").trim());
+        resolve(Number.isFinite(n) && n > 0 ? n : null);
+      } catch {
+        resolve(null);
+      }
+    };
+    ps.on("error", () => resolve(null));
+    ps.on("close", finish);
   });
 }
 
@@ -701,8 +918,260 @@ const healthServer = http.createServer(async (req, res) => {
     return;
   }
 
-  // Launch local .exe from copied game folder
-  // UI → agent → (robocopy UNC → ProgramData\\omskekran\\games) → run exe → restore Edge UI
+// Spliced into healthServer callback — replaces old /launch-game block.
+  // Admin install: robocopy only (no exe launch)
+  if (req.method === "POST" && url.pathname === "/install-game") {
+    let raw = "";
+    req.on("data", (chunk) => {
+      raw += chunk;
+      if (raw.length > 64_000) req.destroy();
+    });
+    req.on("end", () => {
+      if (updateInProgress || gameLaunchInProgress || isStopRequested()) {
+        sendJson(res, 423, { ok: false, error: "Киоск занят, попробуйте позже" });
+        return;
+      }
+
+      let body;
+      try {
+        body = JSON.parse(raw || "{}");
+      } catch {
+        sendJson(res, 400, { ok: false, error: "Некорректный JSON" });
+        return;
+      }
+
+      const folder = String(body.folder || "").trim();
+      const exe = String(body.exe || "").trim();
+      if (!folder) {
+        sendJson(res, 400, { ok: false, error: "Не указана папка игры" });
+        return;
+      }
+
+      const paths = resolveGameInstallPaths(folder, exe);
+      if (!paths) {
+        sendJson(res, 400, { ok: false, error: "Не удалось собрать путь к папке игры" });
+        return;
+      }
+      const { uncFolder, localName, localFolder, exeRel } = paths;
+
+      fs.mkdirSync(omskekranRoot, { recursive: true });
+      fs.mkdirSync(gamesRoot, { recursive: true });
+      fs.mkdirSync(localFolder, { recursive: true });
+
+      if (updateInProgress || isStopRequested()) {
+        sendJson(res, 423, { ok: false, error: "Киоск занят, попробуйте позже" });
+        return;
+      }
+
+      gameLaunchInProgress = true;
+      sendJson(res, 202, { ok: true, accepted: true });
+      void (async () => {
+        try {
+          let copiedFinal = folderBytes(localFolder);
+          let robocode = 0;
+          let okCopy = true;
+          let totalBytes = null;
+
+          const hadLocal = Boolean(
+            (exeRel && findLocalGameExe(localFolder, exeRel)) ||
+              (fs.existsSync(localFolder) && fs.readdirSync(localFolder).length > 0)
+          );
+          patchGameCopy({
+            status: "copying",
+            folder: localName,
+            percent: null,
+            copiedBytes: copiedFinal || null,
+            totalBytes: null,
+            message: hadLocal
+              ? `Синхронизация с ${uncFolder}`
+              : `Копирование с ${uncFolder}`,
+          });
+
+          const measureP = measureUncBytesAsUser(uncFolder).then((n) => {
+            if (n) totalBytes = n;
+            return n;
+          });
+
+          const progressIv = setInterval(() => {
+            try {
+              const copied = folderBytes(localFolder);
+              let percent = null;
+              if (totalBytes && totalBytes > 0) {
+                percent = Math.min(99, Math.floor((copied / totalBytes) * 100));
+              }
+              patchGameCopy({
+                status: "copying",
+                folder: localName,
+                copiedBytes: copied,
+                totalBytes,
+                percent,
+                message: totalBytes
+                  ? `Копирование · ${formatBytes(copied)} / ${formatBytes(totalBytes)}`
+                  : `Копирование · ${formatBytes(copied)}`,
+              });
+            } catch {
+              /* ignore */
+            }
+          }, 2000);
+
+          try {
+            robocode = await runRobocopyAsUser(uncFolder, localFolder);
+            const measured = await measureP;
+            if (measured) totalBytes = measured;
+          } finally {
+            clearInterval(progressIv);
+          }
+
+          okCopy = robocode >= 0 && robocode <= 7;
+          if (robocode === -1) {
+            okCopy = false;
+            patchGameCopy({
+              status: "error",
+              folder: localName,
+              message: "Копирование прервано до завершения",
+            });
+            gameLaunchInProgress = false;
+            return;
+          }
+          if (!okCopy) {
+            console.warn(`[stella-agent] robocopy code=${robocode} unc=${uncFolder}`);
+          }
+
+          copiedFinal = folderBytes(localFolder);
+          if (!okCopy) {
+            patchGameCopy({
+              status: "error",
+              folder: localName,
+              copiedBytes: copiedFinal,
+              totalBytes,
+              percent: null,
+              message: robocopyErrorMessage(robocode, uncFolder),
+            });
+            gameLaunchInProgress = false;
+            return;
+          }
+
+          if (!gameContentLooksOk(localFolder)) {
+            patchGameCopy({
+              status: "error",
+              folder: localName,
+              percent: null,
+              copiedBytes: copiedFinal,
+              totalBytes,
+              message: "Копия неполная: нет Tanks\\Content. Повторите установку или проверьте шару",
+            });
+            gameLaunchInProgress = false;
+            return;
+          }
+
+          if (exeRel) {
+            const localExePath = findLocalGameExe(localFolder, exeRel);
+            if (!localExePath || !isPathInside(localFolder, localExePath)) {
+              patchGameCopy({
+                status: "error",
+                folder: localName,
+                percent: null,
+                copiedBytes: copiedFinal,
+                totalBytes,
+                message: `Игра не найдена: нет «${exeRel}»`,
+              });
+              gameLaunchInProgress = false;
+              return;
+            }
+          }
+
+          patchGameCopy({
+            status: "idle",
+            folder: localName,
+            percent: 100,
+            copiedBytes: copiedFinal,
+            totalBytes: totalBytes || copiedFinal,
+            message: `Установлена на диске · ${formatBytes(copiedFinal)}`,
+          });
+          gameLaunchInProgress = false;
+        } catch (e) {
+          gameLaunchInProgress = false;
+          patchGameCopy({
+            status: "error",
+            folder: gameCopy.folder,
+            percent: null,
+            copiedBytes: gameCopy.copiedBytes,
+            totalBytes: null,
+            message: e instanceof Error ? e.message : String(e),
+          });
+        }
+      })().catch((e) => {
+        console.warn("[stella-agent] game install failed:", e instanceof Error ? e.message : e);
+      });
+    });
+    return;
+  }
+
+  // Admin uninstall: delete local game folder
+  if (req.method === "POST" && url.pathname === "/uninstall-game") {
+    let raw = "";
+    req.on("data", (chunk) => {
+      raw += chunk;
+      if (raw.length > 64_000) req.destroy();
+    });
+    req.on("end", () => {
+      if (updateInProgress || gameLaunchInProgress || isStopRequested()) {
+        sendJson(res, 423, { ok: false, error: "Киоск занят, попробуйте позже" });
+        return;
+      }
+
+      let body;
+      try {
+        body = JSON.parse(raw || "{}");
+      } catch {
+        sendJson(res, 400, { ok: false, error: "Некорректный JSON" });
+        return;
+      }
+
+      const folder = String(body.folder || "").trim();
+      if (!folder) {
+        sendJson(res, 400, { ok: false, error: "Не указана папка игры" });
+        return;
+      }
+
+      const paths = resolveGameInstallPaths(folder, "");
+      if (!paths) {
+        sendJson(res, 400, { ok: false, error: "Не удалось собрать путь к папке игры" });
+        return;
+      }
+      const { localName, localFolder } = paths;
+
+      if (!isPathInside(gamesRoot, localFolder) || localFolder === gamesRoot) {
+        sendJson(res, 400, { ok: false, error: "Некорректный путь к игре" });
+        return;
+      }
+
+      try {
+        if (fs.existsSync(localFolder)) {
+          fs.rmSync(localFolder, { recursive: true, force: true });
+        }
+      } catch (e) {
+        sendJson(res, 500, {
+          ok: false,
+          error: e instanceof Error ? e.message : String(e),
+        });
+        return;
+      }
+
+      patchGameCopy({
+        status: "idle",
+        folder: null,
+        percent: null,
+        copiedBytes: null,
+        totalBytes: null,
+        message: `Удалена с диска: ${localName}`,
+      });
+      sendJson(res, 200, { ok: true, folder: localName });
+    });
+    return;
+  }
+
+  // Launch local .exe only (no robocopy) — install via admin /install-game first
   if (req.method === "POST" && url.pathname === "/launch-game") {
     let raw = "";
     req.on("data", (chunk) => {
@@ -730,31 +1199,36 @@ const healthServer = http.createServer(async (req, res) => {
         return;
       }
 
-      const configuredUnc =
-        String(fileCfg.gameShareUnc || process.env.STELLA_GAME_SHARE_UNC || liveGameShareUnc || gameShareUncRoot || "").trim() ||
-        "\\\\HYDRALISK3\\Patriot\\Игры парк победы";
-      const resolved = resolveGameUncFolder(configuredUnc, folder);
-      const uncFolder = resolved.full;
-      const localName = resolved.localName || resolved.folder || "game";
-      if (!uncFolder || !resolved.folder) {
+      const paths = resolveGameInstallPaths(folder, exe);
+      if (!paths) {
         sendJson(res, 400, { ok: false, error: "Не удалось собрать путь к папке игры" });
         return;
       }
+      const { localName, localFolder, exeRel } = paths;
 
-      fs.mkdirSync(omskekranRoot, { recursive: true });
-      fs.mkdirSync(gamesRoot, { recursive: true });
+      if (!fs.existsSync(localFolder)) {
+        sendJson(res, 404, {
+          ok: false,
+          error: "Игра не установлена на киоске. Сначала установите через админку",
+        });
+        return;
+      }
 
-      const localFolder = path.join(gamesRoot, localName);
-      fs.mkdirSync(localFolder, { recursive: true });
+      const localExePath = findLocalGameExe(localFolder, exeRel);
+      if (!localExePath || !isPathInside(localFolder, localExePath)) {
+        sendJson(res, 404, {
+          ok: false,
+          error: `Игра не найдена: нет «${exeRel}». Сначала установите через админку`,
+        });
+        return;
+      }
 
-      let exeRel = exe.replace(/\//g, "\\");
-      const folderNorm = resolved.folder.replace(/\//g, "\\");
-      if (exeRel.toLowerCase().startsWith(uncFolder.toLowerCase() + "\\")) {
-        exeRel = exeRel.slice(uncFolder.length).replace(/^[\\\/]+/, "");
-      } else if (folderNorm && exeRel.toLowerCase().startsWith(folderNorm.toLowerCase() + "\\")) {
-        exeRel = exeRel.slice(folderNorm.length).replace(/^[\\\/]+/, "");
-      } else if (exeRel.toLowerCase().startsWith(localName.toLowerCase() + "\\")) {
-        exeRel = exeRel.slice(localName.length).replace(/^[\\\/]+/, "");
+      if (!gameContentLooksOk(localFolder)) {
+        sendJson(res, 409, {
+          ok: false,
+          error: "Копия неполная: нет Tanks\\Content. Установите игру заново в админке",
+        });
+        return;
       }
 
       if (updateInProgress || isStopRequested()) {
@@ -762,391 +1236,183 @@ const healthServer = http.createServer(async (req, res) => {
         return;
       }
 
+      const copiedFinal = folderBytes(localFolder);
       gameLaunchInProgress = true;
       sendJson(res, 202, { ok: true, accepted: true });
       void (async () => {
         try {
-        // Always robocopy (/XO) so a partial local copy (exe present, Content missing) gets completed.
-        let localExePath = null;
-        let copiedFinal = folderBytes(localFolder);
-        let robocode = 0;
-        let okCopy = true;
-
-        {
-          const hadLocal = Boolean(findLocalGameExe(localFolder, exeRel));
           patchGameCopy({
-            status: "copying",
+            status: "launching",
             folder: localName,
-            percent: null,
-            copiedBytes: copiedFinal || null,
+            percent: 100,
+            copiedBytes: copiedFinal,
             totalBytes: null,
-            message: hadLocal
-              ? `Синхронизация с ${uncFolder}`
-              : `Копирование с ${uncFolder}`,
+            message: path.basename(localExePath),
           });
 
-          // SYSTEM cannot access domain SMB shares — copy as interactive console user.
-          const runRobocopyAsUser = () =>
-          new Promise((resolve) => {
-            const codeFile = path.join(omskekranRoot, "_robocopy_exit.txt");
-            const jobFile = path.join(omskekranRoot, "_robocopy_job.json");
-            const helperPath = ensureRobocopyHelper();
-            try {
-              if (fs.existsSync(codeFile)) fs.unlinkSync(codeFile);
-              fs.writeFileSync(
-                jobFile,
-                JSON.stringify({ src: uncFolder, dst: localFolder, codeOut: codeFile }),
-                "utf8"
-              );
-            } catch {
-              resolve(16);
-              return;
-            }
-            const codeEsc = String(codeFile).replace(/'/g, "''");
-            const jobEsc = String(jobFile).replace(/'/g, "''");
-            const helperEsc = String(helperPath).replace(/'/g, "''");
-            const cachedEsc = String(readCachedConsoleUser() || "").replace(/'/g, "''");
-            const script =
-              "$ErrorActionPreference = 'SilentlyContinue'\n" +
-              "function Resolve-User {\n" +
-              "  $cs = Get-CimInstance Win32_ComputerSystem\n" +
-              "  if ($cs -and $cs.UserName) { return $cs.UserName }\n" +
-              "  $proc = Get-CimInstance Win32_Process -Filter \"Name = 'explorer.exe'\" | Select-Object -First 1\n" +
-              "  if ($proc) {\n" +
-              "    $o = Invoke-CimMethod -InputObject $proc -MethodName GetOwner -ErrorAction SilentlyContinue\n" +
-              "    if ($o -and $o.User) {\n" +
-              "      if ($o.Domain) { return \"$($o.Domain)\\$($o.User)\" }\n" +
-              "      return $o.User\n" +
-              "    }\n" +
-              "  }\n" +
-              "  $cached = '" +
-              cachedEsc +
-              "'\n" +
-              "  if ($cached) { return $cached }\n" +
-              "  return $null\n" +
-              "}\n" +
-              "$user = Resolve-User\n" +
-              "$codeOut = '" +
-              codeEsc +
-              "'\n" +
-              "$job = '" +
-              jobEsc +
-              "'\n" +
-              "$helper = '" +
-              helperEsc +
-              "'\n" +
-              "if (-not $user) { Set-Content -LiteralPath $codeOut -Value '16' -Encoding ASCII -NoNewline; exit 2 }\n" +
-              "if (-not (Test-Path -LiteralPath $job)) { Set-Content -LiteralPath $codeOut -Value '16' -Encoding ASCII -NoNewline; exit 3 }\n" +
-              "$task = 'StellaKioskRoboOnce'\n" +
-              "try { Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue | Out-Null } catch {}\n" +
-              "$arg = '-NoLogo -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"' + $helper + '\" -JobPath \"' + $job + '\"'\n" +
-              "$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $arg\n" +
-              "$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances Parallel -ExecutionTimeLimit (New-TimeSpan -Minutes 180) -Hidden\n" +
-              "$principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited\n" +
-              "Register-ScheduledTask -TaskName $task -Action $action -Settings $settings -Principal $principal -Force | Out-Null\n" +
-              "Start-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue | Out-Null\n" +
-              "for ($i=0; $i -lt 21600; $i++) {\n" +
-              "  if (Test-Path -LiteralPath $codeOut) {\n" +
-              "    try {\n" +
-              "      $raw = (Get-Content -LiteralPath $codeOut -Raw).Trim()\n" +
-              "      if ($raw -match '^\\d+$' -and [int]$raw -le 16) { break }\n" +
-              "    } catch {}\n" +
-              "  }\n" +
-              "  $info = Get-ScheduledTaskInfo -TaskName $task -ErrorAction SilentlyContinue\n" +
-              "  if ($info -and $info.State -eq 'Running') {\n" +
-              "    Start-Sleep -Milliseconds 500\n" +
-              "    continue\n" +
-              "  }\n" +
-              "  if ($info -and $info.State -ne 'Running') {\n" +
-              "    Start-Sleep -Seconds 2\n" +
-              "    if (Test-Path -LiteralPath $codeOut) { break }\n" +
-              "    if ($i -gt 20) { break }\n" +
-              "  }\n" +
-              "  Start-Sleep -Milliseconds 500\n" +
-              "}\n" +
-              "$code = 16\n" +
-              "if (Test-Path -LiteralPath $codeOut) {\n" +
-              "  try {\n" +
-              "    $n = [int](Get-Content -LiteralPath $codeOut -Raw).Trim()\n" +
-              "    if ($n -ge 0 -and $n -le 16) { $code = $n }\n" +
-              "  } catch {}\n" +
-              "}\n" +
-              "Set-Content -LiteralPath $codeOut -Value ([string]$code) -Encoding ASCII -NoNewline\n" +
-              "try { Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue | Out-Null } catch {}\n";
-            const ps = spawnPowerShell(["-Command", script]);
-            ps.on("error", () => resolve(16));
-            ps.on("close", () => {
-              try {
-                const rawCode = fs.readFileSync(codeFile, "utf8").trim();
-                resolve(normalizeRobocopyCode(rawCode));
-              } catch {
-                resolve(16);
-              } finally {
-                try {
-                  fs.unlinkSync(codeFile);
-                } catch {
-                  /* ignore */
-                }
+          // Keep Edge kiosk running; game is started in the console session and raised on top.
+
+          const cached = readCachedConsoleUser() || "";
+          const exeEsc = String(localExePath).replace(/'/g, "''");
+          const cwdEsc = String(path.dirname(localExePath)).replace(/'/g, "''");
+          const cachedEsc = String(cached).replace(/'/g, "''");
+          const exeName = path.basename(localExePath, path.extname(localExePath));
+          const helperPath = path.join(omskekranRoot, "_launch_game_once.ps1");
+          const helperBody =
+            "$ErrorActionPreference = 'SilentlyContinue'\n" +
+            `$exe = '${exeEsc}'\n` +
+            `$cwd = '${cwdEsc}'\n` +
+            `$exeName = '${String(exeName).replace(/'/g, "''")}'\n` +
+            "Start-Process -FilePath $exe -WorkingDirectory $cwd | Out-Null\n" +
+            "Add-Type @\"\n" +
+            "using System;\n" +
+            "using System.Runtime.InteropServices;\n" +
+            "public static class StellaGameTop {\n" +
+            "  public static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);\n" +
+            "  [DllImport(\"user32.dll\")] public static extern bool SetForegroundWindow(IntPtr hWnd);\n" +
+            "  [DllImport(\"user32.dll\")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);\n" +
+            "  [DllImport(\"user32.dll\")] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);\n" +
+            "  [DllImport(\"user32.dll\")] public static extern bool BringWindowToTop(IntPtr hWnd);\n" +
+            "}\n" +
+            "\"@\n" +
+            "function Raise-GameWindow {\n" +
+            "  foreach ($gp in Get-Process -Name $exeName -ErrorAction SilentlyContinue) {\n" +
+            "    $h = $gp.MainWindowHandle\n" +
+            "    if ($h -eq [IntPtr]::Zero) { continue }\n" +
+            "    [void][StellaGameTop]::ShowWindow($h, 9)\n" +
+            "    [void][StellaGameTop]::SetWindowPos($h, [StellaGameTop]::HWND_TOPMOST, 0, 0, 0, 0, 0x0003)\n" +
+            "    [void][StellaGameTop]::BringWindowToTop($h)\n" +
+            "    [void][StellaGameTop]::SetForegroundWindow($h)\n" +
+            "    return $true\n" +
+            "  }\n" +
+            "  return $false\n" +
+            "}\n" +
+            "for ($i=0; $i -lt 60; $i++) {\n" +
+            "  if (Raise-GameWindow) { Start-Sleep -Milliseconds 500; Raise-GameWindow | Out-Null; break }\n" +
+            "  Start-Sleep -Milliseconds 250\n" +
+            "}\n" +
+            "for ($i=0; $i -lt 15; $i++) { Raise-GameWindow | Out-Null; Start-Sleep -Milliseconds 400 }\n";
+          fs.mkdirSync(omskekranRoot, { recursive: true });
+          fs.writeFileSync(helperPath, helperBody, "utf8");
+
+          const taskName = `StellaKioskGameOnce`;
+          const helperEsc = String(helperPath).replace(/'/g, "''");
+          const exeNameEsc = String(exeName).replace(/'/g, "''");
+          // Launch helper as interactive user (raise window in their session), wait for game process.
+          const script =
+            "$ErrorActionPreference = 'Stop'\n" +
+            "function Resolve-User {\n" +
+            "  $ErrorActionPreference = 'SilentlyContinue'\n" +
+            "  $cs = Get-CimInstance Win32_ComputerSystem\n" +
+            "  if ($cs -and $cs.UserName) { return $cs.UserName }\n" +
+            "  $proc = Get-CimInstance Win32_Process -Filter \"Name = 'explorer.exe'\" -ErrorAction SilentlyContinue | Select-Object -First 1\n" +
+            "  if ($proc) {\n" +
+            "    $o = Invoke-CimMethod -InputObject $proc -MethodName GetOwner -ErrorAction SilentlyContinue\n" +
+            "    if ($o -and $o.User) {\n" +
+            "      if ($o.Domain) { return \"$($o.Domain)\\$($o.User)\" }\n" +
+            "      return $o.User\n" +
+            "    }\n" +
+            "  }\n" +
+            "  Get-CimInstance Win32_Process | ForEach-Object {\n" +
+            "    if ($_.SessionId -gt 0 -and $_.Name -match '^(msedge|sihost|taskhostw|ApplicationFrameHost|ShellExperienceHost)\\.exe$') {\n" +
+            "      $o = Invoke-CimMethod -InputObject $_ -MethodName GetOwner -ErrorAction SilentlyContinue\n" +
+            "      if ($o -and $o.User -and $o.User -notin @('SYSTEM','LOCAL SERVICE','NETWORK SERVICE')) {\n" +
+            "        if ($o.Domain) { return \"$($o.Domain)\\$($o.User)\" }\n" +
+            "        return $o.User\n" +
+            "      }\n" +
+            "    }\n" +
+            "  }\n" +
+            "  $cached = '" +
+            cachedEsc +
+            "'\n" +
+            "  if ($cached) { return $cached }\n" +
+            "  return $null\n" +
+            "}\n" +
+            "$user = Resolve-User\n" +
+            "if (-not $user) { exit 2 }\n" +
+            "$helper = '" +
+            helperEsc +
+            "'\n" +
+            "$task = '" +
+            taskName +
+            "'\n" +
+            "$exeName = '" +
+            exeNameEsc +
+            "'\n" +
+            "try { Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue | Out-Null } catch {}\n" +
+            "$arg = '-NoLogo -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"' + $helper + '\"'\n" +
+            "$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $arg\n" +
+            "$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances Parallel -ExecutionTimeLimit (New-TimeSpan -Minutes 5) -Hidden\n" +
+            "$principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited\n" +
+            "Register-ScheduledTask -TaskName $task -Action $action -Settings $settings -Principal $principal -Force | Out-Null\n" +
+            "Start-ScheduledTask -TaskName $task -ErrorAction Stop | Out-Null\n" +
+            "$started = $false\n" +
+            "for ($i=0; $i -lt 90; $i++) {\n" +
+            "  if (Get-Process -Name $exeName -ErrorAction SilentlyContinue) { $started = $true; break }\n" +
+            "  Start-Sleep -Milliseconds 500\n" +
+            "}\n" +
+            "if (-not $started) {\n" +
+            "  $info = Get-ScheduledTaskInfo -TaskName $task -ErrorAction SilentlyContinue\n" +
+            "  $code = if ($info) { [int]$info.LastTaskResult } else { -1 }\n" +
+            "  try { Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue | Out-Null } catch {}\n" +
+            "  Write-Output (\"fail:\" + $code)\n" +
+            "  exit 4\n" +
+            "}\n" +
+            "Write-Output 'running'\n" +
+            "while (Get-Process -Name $exeName -ErrorAction SilentlyContinue) { Start-Sleep -Seconds 1 }\n" +
+            "try { Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue | Out-Null } catch {}\n" +
+            "Write-Output 'ok'\n";
+
+          await new Promise((resolve, reject) => {
+            const ps = spawnPowerShell(["-Command", script], { capture: true });
+            let sawRunning = false;
+            ps.stdout.on("data", (d) => {
+              const text = String(d);
+              if (!sawRunning && text.includes("running")) {
+                sawRunning = true;
+                patchGameCopy({
+                  status: "running",
+                  folder: localName,
+                  percent: 100,
+                  copiedBytes: copiedFinal,
+                  message: path.basename(localExePath),
+                });
               }
             });
-          });
-
-          const progressIv = setInterval(() => {
-            try {
-              const copied = folderBytes(localFolder);
-              patchGameCopy({
-                status: "copying",
-                folder: localName,
-                copiedBytes: copied,
-                percent: null,
-                message: `Копирование · ${formatBytes(copied)}`,
-              });
-            } catch {
-              /* ignore */
-            }
-          }, 2000);
-
-          try {
-            robocode = await runRobocopyAsUser();
-          } finally {
-            clearInterval(progressIv);
-          }
-          okCopy = robocode >= 0 && robocode <= 7;
-          if (robocode === -1) {
-            okCopy = false;
-            patchGameCopy({
-              status: "error",
-              folder: localName,
-              message: "Копирование прервано до завершения",
+            ps.on("error", (err) => reject(err));
+            ps.on("close", (code) => {
+              if (code === 0) resolve(null);
+              else
+                reject(
+                  new Error(
+                    code === 2
+                      ? "Нет пользователя за консолью"
+                      : `Не удалось запустить игру (код ${code})`
+                  )
+                );
             });
-            gameLaunchInProgress = false;
-            return;
-          }
-          if (!okCopy) {
-            console.warn(`[stella-agent] robocopy code=${robocode} unc=${uncFolder}`);
-          }
-
-          copiedFinal = folderBytes(localFolder);
-          patchGameCopy({
-            status: okCopy ? "copying" : "error",
-            folder: localName,
-            copiedBytes: copiedFinal,
-            percent: okCopy ? 100 : null,
-          message: okCopy
-            ? `Скопировано · ${formatBytes(copiedFinal)}`
-            : robocopyErrorMessage(robocode, uncFolder),
           });
-          if (!okCopy) {
-            gameLaunchInProgress = false;
-            return;
-          }
-          localExePath = findLocalGameExe(localFolder, exeRel);
-        }
 
-        const contentDir = path.join(localFolder, "Tanks", "Content");
-        let contentOk = false;
-        try {
-          contentOk = fs.existsSync(contentDir) && fs.statSync(contentDir).isDirectory();
-          if (contentOk) {
-            const sample = fs.readdirSync(contentDir);
-            contentOk = sample.length > 0;
-          }
-        } catch {
-          contentOk = false;
-        }
-        if (!contentOk) {
-          gameLaunchInProgress = false;
           patchGameCopy({
-            status: "error",
+            status: "idle",
             folder: localName,
             percent: null,
             copiedBytes: copiedFinal,
             totalBytes: null,
-            message: "Копия неполная: нет Tanks\\Content. Повторите запуск или проверьте шару",
+            message: "Установлена на диске",
           });
-          return;
-        }
-
-        if (!localExePath || !isPathInside(localFolder, localExePath)) {
+          gameLaunchInProgress = false;
+        } catch (e) {
           gameLaunchInProgress = false;
           patchGameCopy({
             status: "error",
-            folder: localName,
+            folder: gameCopy.folder,
             percent: null,
-            copiedBytes: copiedFinal,
+            copiedBytes: gameCopy.copiedBytes,
             totalBytes: null,
-            message: okCopy
-              ? `Игра не найдена: нет «${exeRel}»`
-              : `Нет доступа к шаре (код ${robocode})`,
+            message: e instanceof Error ? e.message : String(e),
           });
-          return;
         }
-
-        patchGameCopy({
-          status: "launching",
-          folder: localName,
-          percent: 100,
-          copiedBytes: copiedFinal,
-          totalBytes: null,
-          message: path.basename(localExePath),
-        });
-
-        // Keep Edge kiosk running; game is started in the console session and raised on top.
-
-        const cached = readCachedConsoleUser() || "";
-        const exeEsc = String(localExePath).replace(/'/g, "''");
-        const cwdEsc = String(path.dirname(localExePath)).replace(/'/g, "''");
-        const cachedEsc = String(cached).replace(/'/g, "''");
-        const exeName = path.basename(localExePath, path.extname(localExePath));
-        const helperPath = path.join(omskekranRoot, "_launch_game_once.ps1");
-        const helperBody =
-          "$ErrorActionPreference = 'SilentlyContinue'\n" +
-          `$exe = '${exeEsc}'\n` +
-          `$cwd = '${cwdEsc}'\n` +
-          `$exeName = '${String(exeName).replace(/'/g, "''")}'\n` +
-          "Start-Process -FilePath $exe -WorkingDirectory $cwd | Out-Null\n" +
-          "Add-Type @\"\n" +
-          "using System;\n" +
-          "using System.Runtime.InteropServices;\n" +
-          "public static class StellaGameTop {\n" +
-          "  public static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);\n" +
-          "  [DllImport(\"user32.dll\")] public static extern bool SetForegroundWindow(IntPtr hWnd);\n" +
-          "  [DllImport(\"user32.dll\")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);\n" +
-          "  [DllImport(\"user32.dll\")] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);\n" +
-          "  [DllImport(\"user32.dll\")] public static extern bool BringWindowToTop(IntPtr hWnd);\n" +
-          "}\n" +
-          "\"@\n" +
-          "function Raise-GameWindow {\n" +
-          "  foreach ($gp in Get-Process -Name $exeName -ErrorAction SilentlyContinue) {\n" +
-          "    $h = $gp.MainWindowHandle\n" +
-          "    if ($h -eq [IntPtr]::Zero) { continue }\n" +
-          "    [void][StellaGameTop]::ShowWindow($h, 9)\n" +
-          "    [void][StellaGameTop]::SetWindowPos($h, [StellaGameTop]::HWND_TOPMOST, 0, 0, 0, 0, 0x0003)\n" +
-          "    [void][StellaGameTop]::BringWindowToTop($h)\n" +
-          "    [void][StellaGameTop]::SetForegroundWindow($h)\n" +
-          "    return $true\n" +
-          "  }\n" +
-          "  return $false\n" +
-          "}\n" +
-          "for ($i=0; $i -lt 60; $i++) {\n" +
-          "  if (Raise-GameWindow) { Start-Sleep -Milliseconds 500; Raise-GameWindow | Out-Null; break }\n" +
-          "  Start-Sleep -Milliseconds 250\n" +
-          "}\n" +
-          "for ($i=0; $i -lt 15; $i++) { Raise-GameWindow | Out-Null; Start-Sleep -Milliseconds 400 }\n";
-        fs.mkdirSync(omskekranRoot, { recursive: true });
-        fs.writeFileSync(helperPath, helperBody, "utf8");
-
-        const taskName = `StellaKioskGameOnce`;
-        const helperEsc = String(helperPath).replace(/'/g, "''");
-        const exeNameEsc = String(exeName).replace(/'/g, "''");
-        // Launch helper as interactive user (raise window in their session), wait for game process.
-        const script =
-          "$ErrorActionPreference = 'Stop'\n" +
-          "function Resolve-User {\n" +
-          "  $ErrorActionPreference = 'SilentlyContinue'\n" +
-          "  $cs = Get-CimInstance Win32_ComputerSystem\n" +
-          "  if ($cs -and $cs.UserName) { return $cs.UserName }\n" +
-          "  $proc = Get-CimInstance Win32_Process -Filter \"Name = 'explorer.exe'\" -ErrorAction SilentlyContinue | Select-Object -First 1\n" +
-          "  if ($proc) {\n" +
-          "    $o = Invoke-CimMethod -InputObject $proc -MethodName GetOwner -ErrorAction SilentlyContinue\n" +
-          "    if ($o -and $o.User) {\n" +
-          "      if ($o.Domain) { return \"$($o.Domain)\\$($o.User)\" }\n" +
-          "      return $o.User\n" +
-          "    }\n" +
-          "  }\n" +
-          "  Get-CimInstance Win32_Process | ForEach-Object {\n" +
-          "    if ($_.SessionId -gt 0 -and $_.Name -match '^(msedge|sihost|taskhostw|ApplicationFrameHost|ShellExperienceHost)\\.exe$') {\n" +
-          "      $o = Invoke-CimMethod -InputObject $_ -MethodName GetOwner -ErrorAction SilentlyContinue\n" +
-          "      if ($o -and $o.User -and $o.User -notin @('SYSTEM','LOCAL SERVICE','NETWORK SERVICE')) {\n" +
-          "        if ($o.Domain) { return \"$($o.Domain)\\$($o.User)\" }\n" +
-          "        return $o.User\n" +
-          "      }\n" +
-          "    }\n" +
-          "  }\n" +
-          "  $cached = '" +
-          cachedEsc +
-          "'\n" +
-          "  if ($cached) { return $cached }\n" +
-          "  return $null\n" +
-          "}\n" +
-          "$user = Resolve-User\n" +
-          "if (-not $user) { exit 2 }\n" +
-          "$helper = '" +
-          helperEsc +
-          "'\n" +
-          "$task = '" +
-          taskName +
-          "'\n" +
-          "$exeName = '" +
-          exeNameEsc +
-          "'\n" +
-          "try { Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue | Out-Null } catch {}\n" +
-          "$arg = '-NoLogo -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"' + $helper + '\"'\n" +
-          "$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $arg\n" +
-          "$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances Parallel -ExecutionTimeLimit (New-TimeSpan -Minutes 5) -Hidden\n" +
-          "$principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited\n" +
-          "Register-ScheduledTask -TaskName $task -Action $action -Settings $settings -Principal $principal -Force | Out-Null\n" +
-          "Start-ScheduledTask -TaskName $task -ErrorAction Stop | Out-Null\n" +
-          "$started = $false\n" +
-          "for ($i=0; $i -lt 90; $i++) {\n" +
-          "  if (Get-Process -Name $exeName -ErrorAction SilentlyContinue) { $started = $true; break }\n" +
-          "  Start-Sleep -Milliseconds 500\n" +
-          "}\n" +
-          "if (-not $started) {\n" +
-          "  $info = Get-ScheduledTaskInfo -TaskName $task -ErrorAction SilentlyContinue\n" +
-          "  $code = if ($info) { [int]$info.LastTaskResult } else { -1 }\n" +
-          "  try { Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue | Out-Null } catch {}\n" +
-          "  Write-Output (\"fail:\" + $code)\n" +
-          "  exit 4\n" +
-          "}\n" +
-          "Write-Output 'running'\n" +
-          "while (Get-Process -Name $exeName -ErrorAction SilentlyContinue) { Start-Sleep -Seconds 1 }\n" +
-          "try { Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue | Out-Null } catch {}\n" +
-          "Write-Output 'ok'\n";
-
-        await new Promise((resolve, reject) => {
-          const ps = spawnPowerShell(["-Command", script], { capture: true });
-          let sawRunning = false;
-          ps.stdout.on("data", (d) => {
-            const text = String(d);
-            if (!sawRunning && text.includes("running")) {
-              sawRunning = true;
-              patchGameCopy({
-                status: "running",
-                folder: localName,
-                percent: 100,
-                copiedBytes: copiedFinal,
-                message: path.basename(localExePath),
-              });
-            }
-          });
-          ps.on("error", (err) => reject(err));
-          ps.on("close", (code) => {
-            if (code === 0) resolve(null);
-            else reject(new Error(code === 2 ? "Нет пользователя за консолью" : `Не удалось запустить игру (код ${code})`));
-          });
-        });
-
-        patchGameCopy({
-          status: "idle",
-          folder: localName,
-          percent: null,
-          copiedBytes: copiedFinal,
-          totalBytes: null,
-          message: "Установлена на диске",
-        });
-        gameLaunchInProgress = false;
-      } catch (e) {
-        gameLaunchInProgress = false;
-        patchGameCopy({
-          status: "error",
-          folder: gameCopy.folder,
-          percent: null,
-          copiedBytes: gameCopy.copiedBytes,
-          totalBytes: null,
-          message: e instanceof Error ? e.message : String(e),
-        });
-      }
       })().catch((e) => {
         console.warn("[stella-agent] game launch failed:", e instanceof Error ? e.message : e);
       });

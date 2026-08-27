@@ -35,6 +35,10 @@ import {
   requestKioskSoftwareUpdate,
 } from "../remoteSoftwareUpdate.js";
 import {
+  requestKioskGameInstall,
+  requestKioskGameUninstall,
+} from "../remoteGameInstall.js";
+import {
   acknowledgeSoftwareVersion,
   getSoftwareUpdatePending,
 } from "../softwareUpdatePending.js";
@@ -456,6 +460,50 @@ export async function registerKioskRoutes(app: FastifyInstance) {
         return reply.code(409).send({ ...result, error: result.message });
       }
       return result;
+    }
+  );
+
+  app.post(
+    "/api/kiosks/:id/install-game",
+    { preHandler: requireRoles("admin", "editor") },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+      const body = (request.body || {}) as { folder?: string; exe?: string };
+      const result = await requestKioskGameInstall(id, body);
+      if (!result.ok) {
+        return reply.code(result.status).send({
+          error: result.message,
+          message: result.message,
+          kiosk: result.kiosk,
+        });
+      }
+      return reply.code(202).send({
+        ok: true,
+        message: result.message,
+        kiosk: result.kiosk,
+      });
+    }
+  );
+
+  app.post(
+    "/api/kiosks/:id/uninstall-game",
+    { preHandler: requireRoles("admin", "editor") },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+      const body = (request.body || {}) as { folder?: string };
+      const result = await requestKioskGameUninstall(id, body);
+      if (!result.ok) {
+        return reply.code(result.status).send({
+          error: result.message,
+          message: result.message,
+          kiosk: result.kiosk,
+        });
+      }
+      return {
+        ok: true,
+        message: result.message,
+        kiosk: result.kiosk,
+      };
     }
   );
 

@@ -37,7 +37,12 @@ export function mapKiosk(k: {
   installStage: string;
   installMessage: string | null;
   lastInstallAt: Date | null;
-  exhibit?: { title: string } | null;
+  exhibit?: {
+    title: string;
+    gameTitle?: string | null;
+    gameShareFolder?: string | null;
+    gameExe?: string | null;
+  } | null;
 }, ota?: { target: string | null }) {
   const metaTarget =
     ota?.target !== undefined
@@ -52,6 +57,17 @@ export function mapKiosk(k: {
   const otaPending = Boolean(
     pending && metaTarget && pending.target === metaTarget && local !== metaTarget
   );
+  const shareFolder = String(k.exhibit?.gameShareFolder || "").trim();
+  const gameExe = String(k.exhibit?.gameExe || "").trim();
+  const gameTitle = String(k.exhibit?.gameTitle || "").trim();
+  const exhibitGame =
+    shareFolder && gameExe
+      ? {
+          title: gameTitle || shareFolder,
+          shareFolder,
+          exe: gameExe,
+        }
+      : null;
   return {
     id: k.id,
     kioskId: k.kioskId,
@@ -62,6 +78,7 @@ export function mapKiosk(k: {
     serverUrl: k.serverUrl ?? null,
     exhibitId: k.exhibitId,
     exhibitTitle: k.exhibit?.title ?? null,
+    exhibitGame,
     lastSeenAt: k.lastSeenAt?.toISOString() ?? null,
     online: isOnline(k.lastSeenAt),
     contentVersion: k.contentVersion,
@@ -99,9 +116,16 @@ export function mapKiosk(k: {
   };
 }
 
+export const kioskExhibitSelect = {
+  title: true,
+  gameTitle: true,
+  gameShareFolder: true,
+  gameExe: true,
+} as const;
+
 export async function loadKioskSnapshot() {
   const list = await prisma.kiosk.findMany({
-    include: { exhibit: { select: { title: true } } },
+    include: { exhibit: { select: kioskExhibitSelect } },
     orderBy: { name: "asc" },
   });
   const sw = getDeployMeta().softwareVersion;
@@ -163,7 +187,7 @@ async function fetchHealth(hostname: string, port: number): Promise<HealthPayloa
 export async function probeKioskById(id: string) {
   const kiosk = await prisma.kiosk.findUnique({
     where: { id },
-    include: { exhibit: { select: { title: true } } },
+    include: { exhibit: { select: kioskExhibitSelect } },
   });
   if (!kiosk) return null;
 
@@ -178,7 +202,7 @@ export async function probeKioskById(id: string) {
     const updated = await prisma.kiosk.update({
       where: { id },
       data: { probeStatus, probeMessage, lastProbeAt: new Date() },
-      include: { exhibit: { select: { title: true } } },
+      include: { exhibit: { select: kioskExhibitSelect } },
     });
     const dto = enrichKioskDto(mapKiosk(updated));
     broadcastKioskUpsert(dto);
@@ -217,7 +241,7 @@ export async function probeKioskById(id: string) {
       appVersion: health?.ok ? health.appVersion || undefined : undefined,
       softwareVersion: health?.ok ? health.softwareVersion || undefined : undefined,
     },
-    include: { exhibit: { select: { title: true } } },
+    include: { exhibit: { select: kioskExhibitSelect } },
   });
   const dto = enrichKioskDto(mapKiosk(updated));
   broadcastKioskUpsert(dto);

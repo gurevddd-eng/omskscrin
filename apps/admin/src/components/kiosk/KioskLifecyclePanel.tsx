@@ -192,7 +192,14 @@ function buildGameLane(k: KioskDto): Lane | null {
     steps: GAME_COPY_STATUS_STEPS,
     active: busy || failed ? active : undefined,
     message: parts.length ? parts.join(" · ") : null,
-    progressPct: status === "copying" && gc?.percent != null ? gc.percent : null,
+    progressPct:
+      status === "copying"
+        ? gc?.percent != null
+          ? gc.percent
+          : gc?.totalBytes && gc.totalBytes > 0 && gc.copiedBytes != null
+            ? Math.min(99, Math.round((gc.copiedBytes / gc.totalBytes) * 100))
+            : null
+        : null,
   };
 }
 

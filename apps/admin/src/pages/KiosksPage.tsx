@@ -190,6 +190,8 @@ export function KiosksPage() {
               pushingConfig={p.pushingConfig === p.selected.id}
               clearingPolicies={p.clearingPolicies === p.selected.id}
               updatingSoftware={p.updatingSoftware === p.selected.id}
+              installingGame={p.installingGame === p.selected.id}
+              uninstallingGame={p.uninstallingGame === p.selected.id}
               binding={p.binding === p.selected.id}
               removingAdmin={p.removingAdmin === p.selected.id}
               removingFull={p.removingFull === p.selected.id}
@@ -203,6 +205,8 @@ export function KiosksPage() {
               onStart={p.startKiosk}
               onStop={p.stopKiosk}
               onSoftwareUpdate={p.softwareUpdateOne}
+              onInstallGame={p.installGame}
+              onUninstallGame={p.uninstallGame}
               onRemoveFromAdmin={p.removeFromAdmin}
               onRemoveFull={p.removeFull}
               onSaveNetwork={p.saveNetwork}
