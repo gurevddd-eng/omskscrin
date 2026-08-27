@@ -1258,35 +1258,100 @@ export function App({ preview }: { preview?: KioskPreview } = {}) {
                   ) : (
                     <div className="about-hero about-hero--empty" aria-hidden />
                   )}
-                  {audio ? (
-                    <div className="about-audio">
-                      <AudioPlayer src={audio} active={tab === "about"} title="Аудиогид" />
-                    </div>
-                  ) : null}
-                  {galleryIds.length > 0 || video ? (
-                    <div className="about-media__links" aria-label="Медиа экспоната">
-                      {galleryIds.length > 0 ? (
-                        <button
-                          type="button"
-                          className="btn-red about-media__link"
-                          onClick={() => goTab("gallery")}
-                        >
-                          Галерея
-                          <span className="about-media__link-count">
-                            {String(galleryIds.length).padStart(2, "0")}
-                          </span>
-                        </button>
+                  {audio || galleryIds.length > 0 || video ? (
+                    <section className="about-dock" aria-label="Медиа экспоната">
+                      <header className="about-dock__head">
+                        <div>
+                          <p className="about-dock__label">Медиа</p>
+                          <p className="about-dock__hint">Слушайте и смотрите</p>
+                        </div>
+                        <span className="about-dock__badge" aria-hidden>
+                          {(audio ? 1 : 0) + (galleryIds.length > 0 ? 1 : 0) + (video ? 1 : 0)}
+                        </span>
+                      </header>
+
+                      {audio ? (
+                        <AudioPlayer src={audio} active={tab === "about"} title={exhibit.title} />
                       ) : null}
-                      {video ? (
-                        <button
-                          type="button"
-                          className="btn-ghost about-media__link"
-                          onClick={() => goTab("video")}
-                        >
-                          Видео
-                        </button>
+
+                      {galleryIds.length > 0 || video ? (
+                        <div className="about-dock__tiles">
+                          {galleryIds.length > 0 ? (
+                            <button
+                              type="button"
+                              className="about-dock__tile about-dock__tile--gallery"
+                              onClick={() => goTab("gallery")}
+                            >
+                              <span className="about-dock__tile-icon" aria-hidden>
+                                <svg viewBox="0 0 24 24" width="22" height="22">
+                                  <rect
+                                    x="3"
+                                    y="5"
+                                    width="18"
+                                    height="14"
+                                    rx="2.5"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    strokeWidth="1.8"
+                                  />
+                                  <circle cx="8.5" cy="10" r="1.6" fill="currentColor" />
+                                  <path
+                                    d="M3.8 16.2 8.2 12l3.1 2.6 3.4-3.8 5.5 5.4"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    strokeWidth="1.8"
+                                    strokeLinejoin="round"
+                                  />
+                                </svg>
+                              </span>
+                              <span className="about-dock__tile-copy">
+                                <span className="about-dock__tile-kicker">Фото</span>
+                                <span className="about-dock__tile-title">Галерея</span>
+                              </span>
+                              <span className="about-dock__tile-count">
+                                {String(galleryIds.length).padStart(2, "0")}
+                              </span>
+                            </button>
+                          ) : null}
+                          {video ? (
+                            <button
+                              type="button"
+                              className="about-dock__tile about-dock__tile--video"
+                              onClick={() => goTab("video")}
+                            >
+                              <span className="about-dock__tile-icon" aria-hidden>
+                                <svg viewBox="0 0 24 24" width="22" height="22">
+                                  <rect
+                                    x="3"
+                                    y="6"
+                                    width="13"
+                                    height="12"
+                                    rx="2.2"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    strokeWidth="1.8"
+                                  />
+                                  <path
+                                    d="M16.2 10.2 21 7.4v9.2l-4.8-2.8z"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    strokeWidth="1.8"
+                                    strokeLinejoin="round"
+                                  />
+                                </svg>
+                              </span>
+                              <span className="about-dock__tile-copy">
+                                <span className="about-dock__tile-kicker">Ролик</span>
+                                <span className="about-dock__tile-title">Видео</span>
+                              </span>
+                              <span className="about-dock__tile-go" aria-hidden>
+                                →
+                              </span>
+                            </button>
+                          ) : null}
+                        </div>
                       ) : null}
-                    </div>
+                    </section>
                   ) : null}
                 </aside>
               </div>

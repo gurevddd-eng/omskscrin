@@ -13,7 +13,7 @@ type Props = {
   title?: string;
 };
 
-export function AudioPlayer({ src, active, title = "Аудиорассказ" }: Props) {
+export function AudioPlayer({ src, active, title = "Аудиогид" }: Props) {
   const audioRef = useRef<HTMLAudioElement>(null);
   const [playing, setPlaying] = useState(false);
   const [current, setCurrent] = useState(0);
@@ -76,6 +76,8 @@ export function AudioPlayer({ src, active, title = "Аудиорассказ" }:
     setSeeking(false);
   }
 
+  const progress = duration > 0 ? Math.min(100, (current / duration) * 100) : 0;
+
   return (
     <div className={`audio-player ${playing ? "is-playing" : ""}`}>
       <audio
@@ -88,28 +90,49 @@ export function AudioPlayer({ src, active, title = "Аудиорассказ" }:
         onPlay={() => setPlaying(true)}
         onPause={() => setPlaying(false)}
       />
-      <div className="audio-player__meta">
-        <p className="section-kicker">Аудио</p>
-        <p className="audio-player__title">{title}</p>
-      </div>
-      <button type="button" className="audio-player__play" onClick={togglePlay} aria-label={playing ? "Пауза" : "Слушать"}>
-        {playing ? "❚❚" : "▶"}
+
+      <button
+        type="button"
+        className="audio-player__play"
+        onClick={togglePlay}
+        aria-label={playing ? "Пауза" : "Слушать"}
+      >
+        {playing ? (
+          <svg viewBox="0 0 24 24" aria-hidden width="22" height="22">
+            <rect x="5" y="4" width="5" height="16" rx="1.5" fill="currentColor" />
+            <rect x="14" y="4" width="5" height="16" rx="1.5" fill="currentColor" />
+          </svg>
+        ) : (
+          <svg viewBox="0 0 24 24" aria-hidden width="22" height="22">
+            <path d="M8 5.5v13l11-6.5L8 5.5z" fill="currentColor" />
+          </svg>
+        )}
       </button>
-      <div className="audio-player__timeline">
-        <input
-          type="range"
-          min={0}
-          max={duration || 0}
-          step={0.1}
-          value={current}
-          aria-label="Позиция"
-          onChange={(e) => onSeekInput(Number(e.target.value))}
-          onPointerUp={(e) => onSeekCommit(Number((e.target as HTMLInputElement).value))}
-          onTouchEnd={(e) => onSeekCommit(Number((e.target as HTMLInputElement).value))}
-        />
-        <div className="audio-player__times">
-          <span>{formatTime(current)}</span>
-          <span>{formatTime(duration)}</span>
+
+      <div className="audio-player__body">
+        <div className="audio-player__meta">
+          <p className="audio-player__kicker">Аудиогид</p>
+          <p className="audio-player__title">{title}</p>
+        </div>
+
+        <div className="audio-player__timeline">
+          <div className="audio-player__track" style={{ ["--progress" as string]: `${progress}%` }}>
+            <input
+              type="range"
+              min={0}
+              max={duration || 0}
+              step={0.1}
+              value={current}
+              aria-label="Позиция"
+              onChange={(e) => onSeekInput(Number(e.target.value))}
+              onPointerUp={(e) => onSeekCommit(Number((e.target as HTMLInputElement).value))}
+              onTouchEnd={(e) => onSeekCommit(Number((e.target as HTMLInputElement).value))}
+            />
+          </div>
+          <div className="audio-player__times">
+            <span>{formatTime(current)}</span>
+            <span>{formatTime(duration)}</span>
+          </div>
         </div>
       </div>
     </div>
