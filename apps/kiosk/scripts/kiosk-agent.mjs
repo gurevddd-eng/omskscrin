@@ -283,25 +283,45 @@ function robocopyErrorMessage(code, uncFolder) {
   return `Ошибка копирования (код ${code})`;
 }
 
-const ROBOCOPY_ONCE_PS1 = `$ErrorActionPreference = 'Stop'
-param([Parameter(Mandatory=$true)][string]$JobPath)
-$job = Get-Content -LiteralPath $JobPath -Raw | ConvertFrom-Json
-$Src = [string]$job.src
-$Dst = [string]$job.dst
-$CodeOut = [string]$job.codeOut
-if (-not $Src -or -not $Dst -or -not $CodeOut) { exit 2 }
-if (-not (Test-Path -LiteralPath $Src)) {
-  Set-Content -LiteralPath $CodeOut -Value '16' -Encoding ASCII -NoNewline
-  exit 3
+const ROBOCOPY_ONCE_PS1 = `param([Parameter(Mandatory=$true)][string]$JobPath)
+$ErrorActionPreference = 'Stop'
+$log = Join-Path $env:ProgramData 'omskekran\\_robocopy_once.log'
+function Write-RoboLog([string]$msg) {
+  try { Add-Content -LiteralPath $log -Value (("[{0}] {1}" -f (Get-Date -Format 's'), $msg)) -Encoding UTF8 } catch {}
 }
-New-Item -ItemType Directory -Force -Path $Dst | Out-Null
-$p = Start-Process -FilePath 'robocopy.exe' -ArgumentList @(
-  $Src,
-  $Dst,
-  '/E','/COPY:DAT','/DCOPY:DAT','/XO','/R:1','/W:2','/NFL','/NDL','/NJH','/NJS','/NP'
-) -Wait -PassThru -WindowStyle Hidden
-$code = if ($p) { [int]$p.ExitCode } else { 16 }
-Set-Content -LiteralPath $CodeOut -Value ([string]$code) -Encoding ASCII -NoNewline
+try {
+  Write-RoboLog ("start JobPath=" + $JobPath)
+  $job = Get-Content -LiteralPath $JobPath -Raw -Encoding UTF8 | ConvertFrom-Json
+  $Src = [string]$job.src
+  $Dst = [string]$job.dst
+  $CodeOut = [string]$job.codeOut
+  Write-RoboLog ("src=" + $Src + " dst=" + $Dst)
+  if (-not $Src -or -not $Dst -or -not $CodeOut) {
+    Write-RoboLog 'missing job fields'
+    if ($CodeOut) { Set-Content -LiteralPath $CodeOut -Value '16' -Encoding ASCII -NoNewline }
+    exit 2
+  }
+  if (-not (Test-Path -LiteralPath $Src)) {
+    Write-RoboLog ('Test-Path failed for ' + $Src)
+    Set-Content -LiteralPath $CodeOut -Value '16' -Encoding ASCII -NoNewline
+    exit 3
+  }
+  New-Item -ItemType Directory -Force -Path $Dst | Out-Null
+  $p = Start-Process -FilePath 'robocopy.exe' -ArgumentList @(
+    $Src,
+    $Dst,
+    '/E','/COPY:DAT','/DCOPY:DAT','/XO','/R:1','/W:2','/NFL','/NDL','/NJH','/NJS','/NP'
+  ) -Wait -PassThru -WindowStyle Hidden
+  $code = if ($p) { [int]$p.ExitCode } else { 16 }
+  Write-RoboLog ("robocopy exit=" + $code)
+  Set-Content -LiteralPath $CodeOut -Value ([string]$code) -Encoding ASCII -NoNewline
+} catch {
+  Write-RoboLog ("error: " + $_.Exception.Message)
+  try {
+    if ($CodeOut) { Set-Content -LiteralPath $CodeOut -Value '16' -Encoding ASCII -NoNewline }
+  } catch {}
+  exit 4
+}
 `;
 
 function ensureRobocopyHelper() {
