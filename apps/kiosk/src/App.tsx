@@ -1012,9 +1012,18 @@ export function App({ preview }: { preview?: KioskPreview } = {}) {
       <nav className="rail__nav" aria-label="Хроника">
         {timelinePages.length > 0 ? (
           <div className="rail__chronicle" aria-label="Хроника">
-            <p className="rail__chronicle-label">Хроника</p>
-            <div className="rail__years" role="list">
-              {timelinePages.map((page) => {
+            <header className="rail__chronicle-head">
+              <div>
+                <p className="rail__chronicle-label">Хроника</p>
+                <p className="rail__chronicle-hint">Страницы эпохи</p>
+              </div>
+              <span className="rail__chronicle-count">
+                {String(timelinePages.length).padStart(2, "0")}
+              </span>
+            </header>
+            <div className="rail__chronicle-track" role="list">
+              <span className="rail__chronicle-rail" aria-hidden />
+              {timelinePages.map((page, i) => {
                 const active = tab === "timeline" && activeTimeline?.id === page.id;
                 return (
                   <button
@@ -1025,8 +1034,13 @@ export function App({ preview }: { preview?: KioskPreview } = {}) {
                     aria-current={active ? "page" : undefined}
                     onClick={() => goTimeline(page.id)}
                   >
-                    <span className="rail__year-label">{page.label}</span>
-                    <span className="rail__year-mark" aria-hidden />
+                    <span className="rail__year-node" aria-hidden>
+                      <span className="rail__year-dot" />
+                    </span>
+                    <span className="rail__year-copy">
+                      <span className="rail__year-idx">{String(i + 1).padStart(2, "0")}</span>
+                      <span className="rail__year-label">{page.label}</span>
+                    </span>
                   </button>
                 );
               })}

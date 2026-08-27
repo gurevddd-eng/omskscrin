@@ -1,17 +1,11 @@
 import { useEffect, useState } from "react";
 import type { KioskDto } from "@stella/shared";
 import { INSTALL_STATUS_LABEL, PROBE_STATUS_LABEL } from "@stella/shared";
-import {
-  InstallTaskProgress,
-  PolicyClearTaskProgress,
-  UiStartTaskProgress,
-  UiStopTaskProgress,
-} from "../../components/kiosk/KioskTaskProgress";
-import { KioskOtaStatus, resolveOtaState } from "../../components/kiosk/KioskOtaStatus";
+import { KioskLifecyclePanel } from "../../components/kiosk/KioskLifecyclePanel";
+import { resolveOtaState } from "../../components/kiosk/KioskOtaStatus";
 import { probeBadgeClass } from "../../components/kiosk/status";
 import { Card } from "../../components/ui/Card";
 import type { ExhibitOpt } from "./kioskHelpers";
-import { formatSeen } from "./kioskHelpers";
 
 export type KioskDetailProps = {
   kiosk: KioskDto;
@@ -178,54 +172,11 @@ export function KioskDetail(props: KioskDetailProps) {
       </header>
 
       <div className="kx-body">
-        <InstallTaskProgress kiosk={k} />
-        <UiStartTaskProgress kiosk={k} />
-        <UiStopTaskProgress kiosk={k} />
-        <PolicyClearTaskProgress kiosk={k} />
-
-        <KioskOtaStatus
+        <KioskLifecyclePanel
           kiosk={k}
           deployTarget={props.targetSoftwareVersion}
           updating={props.updatingSoftware || props.otaPending}
         />
-
-        <section className="kx-section">
-          <h3 className="kx-section__head">Состояние</h3>
-          <div className="kx-section__body">
-            <dl className="kx-meta kx-meta--flush">
-              <div className="kx-meta__cell">
-                <dt>Heartbeat</dt>
-                <dd>{formatSeen(k.lastSeenAt)}</dd>
-              </div>
-              <div className="kx-meta__cell">
-                <dt>appVersion</dt>
-                <dd>{k.appVersion || "—"}</dd>
-              </div>
-              <div className="kx-meta__cell">
-                <dt>Контент</dt>
-                <dd className="mono">{k.contentVersion || "—"}</dd>
-              </div>
-              <div className="kx-meta__cell">
-                <dt>Синхронизация</dt>
-                <dd className={k.syncStatus === "error" ? "bad" : undefined}>
-                  {k.syncStatus}
-                  {k.syncMessage ? ` · ${k.syncMessage}` : ""}
-                </dd>
-              </div>
-              <div className="kx-meta__cell">
-                <dt>Health URL</dt>
-                <dd className="mono">
-                  http://{k.hostname}:{k.healthPort}/health
-                </dd>
-              </div>
-              <div className="kx-meta__cell">
-                <dt>UI (локально)</dt>
-                <dd className="mono">http://127.0.0.1:{k.uiPort}/</dd>
-              </div>
-            </dl>
-            {k.probeMessage ? <p className="kx-probe-msg">{k.probeMessage}</p> : null}
-          </div>
-        </section>
 
         {props.canEdit ? (
           <>
