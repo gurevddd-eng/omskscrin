@@ -65,9 +65,11 @@ export function buildKioskJsonConfig(
     serverUrl?: string | null;
     appVersion?: string | null;
   },
-  site: SiteNetworkSettings
+  site: SiteNetworkSettings,
+  gameShareUnc?: string | null
 ) {
   const net = resolveKioskNetwork(kiosk, site);
+  const unc = String(gameShareUnc || "").trim();
   return {
     hostname: kiosk.hostname.toLowerCase(),
     kioskId: kiosk.kioskId.toLowerCase(),
@@ -80,6 +82,7 @@ export function buildKioskJsonConfig(
     healthPort: net.healthPort,
     uiPort: net.uiPort,
     appVersion: kiosk.appVersion?.trim() || "0.1.0",
+    ...(unc ? { gameShareUnc: unc.replace(/\/$/, "") } : {}),
   };
 }
 

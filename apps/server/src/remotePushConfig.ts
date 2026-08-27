@@ -1,7 +1,9 @@
 import { prisma } from "./prisma.js";
 import { getEffectiveDeploy } from "./deployCredentials.js";
 import { mapKiosk, probeKioskById } from "./kioskProbe.js";
+import { enrichKioskDto } from "./kioskDtoEnrich.js";
 import { buildKioskJsonConfig, getSiteNetworkSettings } from "./networkSettings.js";
+import { ensureSiteSettings } from "./siteSettings.js";
 import {
   deployCredentialsOk,
   deployTransportError,
@@ -43,8 +45,9 @@ export async function pushKioskConfig(id: string): Promise<{
   }
 
   const site = await getSiteNetworkSettings();
-  const json = JSON.stringify(buildKioskJsonConfig(kiosk, site), null, 2);
-  const net = buildKioskJsonConfig(kiosk, site);
+  const settings = await ensureSiteSettings();
+  const json = JSON.stringify(buildKioskJsonConfig(kiosk, site, settings.gameShareUnc), null, 2);
+  const net = buildKioskJsonConfig(kiosk, site, settings.gameShareUnc);
 
   running.add(id);
   try {

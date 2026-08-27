@@ -232,11 +232,43 @@ function listInstalledGames() {
     return fs
       .readdirSync(gamesRoot, { withFileTypes: true })
       .filter((d) => d.isDirectory() && !d.name.startsWith("."))
+      .filter((d) => {
+        try {
+          return fs.readdirSync(path.join(gamesRoot, d.name)).length > 0;
+        } catch {
+          return false;
+        }
+      })
       .map((d) => d.name)
       .slice(0, 80);
   } catch {
     return [];
   }
+}
+
+function persistKioskJsonField(patch) {
+  const cfgPath = path.join(process.env.ProgramData || "C:\\ProgramData", "StellaKiosk", "kiosk.json");
+  try {
+    let cur = {};
+    if (fs.existsSync(cfgPath)) {
+      cur = readJsonFile(cfgPath);
+    }
+    const next = { ...cur, ...patch };
+    fs.mkdirSync(path.dirname(cfgPath), { recursive: true });
+    fs.writeFileSync(cfgPath, JSON.stringify(next, null, 2), "utf8");
+  } catch (e) {
+    console.warn("[stella-agent] persist kiosk.json failed:", e instanceof Error ? e.message : e);
+  }
+}
+
+function robocopyErrorMessage(code, uncFolder) {
+  if (code === 16) {
+    return `Папка недоступна на шаре: ${uncFolder}. Проверьте UNC в Настройках и доступ пользователя за консолью`;
+  }
+  if (code === 2 || code === 3) {
+    return `Нет доступа к шаре или папка не найдена: ${uncFolder}`;
+  }
+  return `Ошибка копирования (код ${code})`;
 }
 
 function folderBytes(dir) {
@@ -800,9 +832,9 @@ const healthServer = http.createServer(async (req, res) => {
             folder: localName,
             copiedBytes: copiedFinal,
             percent: okCopy ? 100 : null,
-            message: okCopy
-              ? `Скопировано · ${formatBytes(copiedFinal)}`
-              : `Ошибка копирования (код ${robocode})`,
+          message: okCopy
+            ? `Скопировано · ${formatBytes(copiedFinal)}`
+            : robocopyErrorMessage(robocode, uncFolder),
           });
           if (!okCopy) {
             gameLaunchInProgress = false;
@@ -1069,6 +1101,9 @@ let gameShareScanBusy = false;
 let lastGameShareScanAt = 0;
 /** Live UNC from server heartbeat (Settings → шара игр). */
 let liveGameShareUnc = gameShareUncRoot;
+if (fileCfg.gameShareUnc) {
+  liveGameShareUnc = normalizeUncPath(fileCfg.gameShareUnc);
+}
 
 async function walkFolderForExes(rootDir, folderBaseDir, depthLeft, out) {
   if (out.length >= 80) return;
@@ -1145,10 +1180,14 @@ async function pushHeartbeat() {
     try {
       const data = await res.json();
       const uncFromServer = String(data.gameShareUnc || "").trim();
-      if (uncFromServer && uncFromServer !== liveGameShareUnc) {
-        liveGameShareUnc = normalizeUncPath(uncFromServer);
-        lastGameShareScanAt = 0;
-        void scanGameShareFolders();
+      if (uncFromServer) {
+        const normalized = normalizeUncPath(uncFromServer);
+        if (normalized !== liveGameShareUnc) {
+          liveGameShareUnc = normalized;
+          persistKioskJsonField({ gameShareUnc: liveGameShareUnc });
+          lastGameShareScanAt = 0;
+          void scanGameShareFolders();
+        }
       }
       const target = String(data.targetSoftwareVersion || "").trim();
       if (
