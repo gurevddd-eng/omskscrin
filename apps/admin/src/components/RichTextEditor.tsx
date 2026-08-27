@@ -5,6 +5,10 @@ import Underline from "@tiptap/extension-underline";
 import Link from "@tiptap/extension-link";
 import Placeholder from "@tiptap/extension-placeholder";
 import TextAlign from "@tiptap/extension-text-align";
+import { Table } from "@tiptap/extension-table";
+import { TableRow } from "@tiptap/extension-table-row";
+import { TableCell } from "@tiptap/extension-table-cell";
+import { TableHeader } from "@tiptap/extension-table-header";
 
 type Props = {
   value: string;
@@ -28,7 +32,8 @@ export function toEditorHtml(raw: string): string {
     .join("");
 }
 
-function normalizeHtml(html: string): string {
+/** Compare TipTap HTML ignoring cosmetic whitespace / empty paragraphs. */
+export function normalizeEditorHtml(html: string): string {
   return String(html || "")
     .replace(/\s+/g, " ")
     .replace(/>\s+</g, "><")
@@ -69,6 +74,8 @@ function ToolbarBtn({
 export function RichTextEditor({ value, onChange, disabled, placeholder, docKey }: Props) {
   const skipNextExternal = useRef(false);
   const lastDocKey = useRef(docKey);
+  const valueRef = useRef(value);
+  valueRef.current = value;
 
   const editor = useEditor({
     immediatelyRender: false,
@@ -87,11 +94,22 @@ export function RichTextEditor({ value, onChange, disabled, placeholder, docKey 
       TextAlign.configure({
         types: ["heading", "paragraph"],
       }),
+      Table.configure({
+        resizable: true,
+        HTMLAttributes: { class: "rte-table" },
+      }),
+      TableRow,
+      TableHeader,
+      TableCell,
     ],
     content: toEditorHtml(value),
     editable: !disabled,
     onUpdate: ({ editor: ed }) => {
       const html = ed.isEmpty ? "" : ed.getHTML();
+      // TipTap may emit cosmetic HTML on mount/parse — don't treat as a user edit.
+      if (normalizeEditorHtml(html) === normalizeEditorHtml(toEditorHtml(valueRef.current))) {
+        return;
+      }
       skipNextExternal.current = true;
       onChange(html);
     },
@@ -129,7 +147,7 @@ export function RichTextEditor({ value, onChange, disabled, placeholder, docKey 
 
     const next = toEditorHtml(value);
     const current = editor.isEmpty ? "" : editor.getHTML();
-    if (normalizeHtml(next) === normalizeHtml(current)) return;
+    if (normalizeEditorHtml(next) === normalizeEditorHtml(current)) return;
     if (!docChanged && editor.isFocused) return;
 
     editor.commands.setContent(next || "", { emitUpdate: false });
@@ -137,6 +155,8 @@ export function RichTextEditor({ value, onChange, disabled, placeholder, docKey 
   }, [editor, value, docKey]);
 
   if (!editor) return <div className="rte rte--loading">Загрузка редактора…</div>;
+
+  const inTable = editor.isActive("table");
 
   const setLink = () => {
     if (disabled) return;
@@ -149,6 +169,11 @@ export function RichTextEditor({ value, onChange, disabled, placeholder, docKey 
       return;
     }
     editor.chain().focus().extendMarkRange("link").setLink({ href: trimmed }).run();
+  };
+
+  const insertTable = () => {
+    if (disabled) return;
+    editor.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run();
   };
 
   return (
@@ -211,6 +236,44 @@ export function RichTextEditor({ value, onChange, disabled, placeholder, docKey 
           active={editor.isActive("blockquote")}
           disabled={disabled}
           onClick={() => editor.chain().focus().toggleBlockquote().run()}
+        />
+        <span className="rte__sep" aria-hidden />
+        <ToolbarBtn
+          label="Таблица"
+          title="Вставить таблицу 3×3"
+          active={inTable}
+          disabled={disabled}
+          onClick={insertTable}
+        />
+        <ToolbarBtn
+          label="+ряд"
+          title="Добавить строку снизу"
+          disabled={disabled || !inTable}
+          onClick={() => editor.chain().focus().addRowAfter().run()}
+        />
+        <ToolbarBtn
+          label="+кол"
+          title="Добавить столбец справа"
+          disabled={disabled || !inTable}
+          onClick={() => editor.chain().focus().addColumnAfter().run()}
+        />
+        <ToolbarBtn
+          label="−ряд"
+          title="Удалить строку"
+          disabled={disabled || !inTable}
+          onClick={() => editor.chain().focus().deleteRow().run()}
+        />
+        <ToolbarBtn
+          label="−кол"
+          title="Удалить столбец"
+          disabled={disabled || !inTable}
+          onClick={() => editor.chain().focus().deleteColumn().run()}
+        />
+        <ToolbarBtn
+          label="✕табл"
+          title="Удалить таблицу"
+          disabled={disabled || !inTable}
+          onClick={() => editor.chain().focus().deleteTable().run()}
         />
         <span className="rte__sep" aria-hidden />
         <ToolbarBtn

@@ -17,9 +17,17 @@ const ALLOWED_TAGS = [
   "blockquote",
   "a",
   "span",
+  "table",
+  "thead",
+  "tbody",
+  "tr",
+  "th",
+  "td",
+  "colgroup",
+  "col",
 ];
 
-const ALLOWED_ATTR = ["href", "target", "rel", "class", "style"];
+const ALLOWED_ATTR = ["href", "target", "rel", "class", "style", "colspan", "rowspan", "colwidth"];
 
 /** Turn stored exhibit body (HTML or legacy plain text) into safe HTML for kiosk. */
 export function sanitizeExhibitBody(raw: string | null | undefined): string {

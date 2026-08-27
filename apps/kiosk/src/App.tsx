@@ -32,55 +32,6 @@ function contentPollSec(config: { syncIntervalSec: number }, errored: boolean) {
   return Math.max(15, Math.min(n, 300));
 }
 
-const NAV: { id: Tab; label: string }[] = [
-  { id: "home", label: "Главная" },
-  { id: "about", label: "Описание" },
-  { id: "gallery", label: "Галерея" },
-  { id: "video", label: "Видео" },
-];
-
-function NavIcon({ id }: { id: Tab }) {
-  const common = {
-    viewBox: "0 0 24 24",
-    fill: "none",
-    stroke: "currentColor",
-    strokeWidth: 1.7,
-    strokeLinecap: "round" as const,
-    strokeLinejoin: "round" as const,
-    "aria-hidden": true,
-  };
-  if (id === "home") {
-    return (
-      <svg {...common}>
-        <path d="M4 10.5 12 4l8 6.5V20a1 1 0 0 1-1 1h-5v-6H10v6H5a1 1 0 0 1-1-1v-9.5Z" />
-      </svg>
-    );
-  }
-  if (id === "about") {
-    return (
-      <svg {...common}>
-        <path d="M7 5h10M7 10h10M7 15h6" />
-        <rect x="4" y="3" width="16" height="18" rx="2" />
-      </svg>
-    );
-  }
-  if (id === "gallery") {
-    return (
-      <svg {...common}>
-        <rect x="3" y="5" width="18" height="14" rx="2" />
-        <circle cx="9" cy="11" r="1.6" fill="currentColor" stroke="none" />
-        <path d="m7 17 3.2-3.5 2.3 2.4L16 12l4 5" />
-      </svg>
-    );
-  }
-  return (
-    <svg {...common}>
-      <rect x="3" y="6" width="18" height="12" rx="2" />
-      <path d="m10 9 6 3-6 3V9Z" fill="currentColor" stroke="none" />
-    </svg>
-  );
-}
-
 function useClock() {
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
@@ -1042,7 +993,7 @@ export function App({ preview }: { preview?: KioskPreview } = {}) {
 
   const rail = (
     <aside className="rail">
-      <div className="rail__brand">
+      <button type="button" className="rail__brand" onClick={() => goTab("home")} aria-label="На главную">
         <div className="rail__mark" aria-hidden>
           <StarLogo />
         </div>
@@ -1056,24 +1007,9 @@ export function App({ preview }: { preview?: KioskPreview } = {}) {
             Мемориальный комплекс
           </p>
         </div>
-      </div>
+      </button>
 
-      <nav className="rail__nav" aria-label="Разделы">
-        {NAV.map((item) => (
-          <button
-            key={item.id}
-            type="button"
-            className={`rail__nav-btn ${tab === item.id ? "is-active" : ""}`}
-            onClick={() => goTab(item.id)}
-          >
-            <span className="rail__nav-icon">
-              <NavIcon id={item.id} />
-            </span>
-            <span className="rail__nav-label">{item.label}</span>
-            <span className="rail__nav-mark" aria-hidden />
-          </button>
-        ))}
-
+      <nav className="rail__nav" aria-label="Хроника">
         {timelinePages.length > 0 ? (
           <div className="rail__chronicle" aria-label="Хроника">
             <p className="rail__chronicle-label">Хроника</p>
@@ -1096,7 +1032,9 @@ export function App({ preview }: { preview?: KioskPreview } = {}) {
               })}
             </div>
           </div>
-        ) : null}
+        ) : (
+          <div className="rail__nav-spacer" aria-hidden />
+        )}
       </nav>
 
       <div className="rail__foot">
@@ -1262,8 +1200,15 @@ export function App({ preview }: { preview?: KioskPreview } = {}) {
           {exhibit && tab === "about" && (
           <section className="panel panel--about" key={`about-${screenKey}`}>
             <header className="about-head">
-              <p className="panel__kicker">Описание</p>
-              <h1 className="panel__title panel__title--sm">{exhibit.title}</h1>
+              <div className="about-head__row">
+                <div>
+                  <p className="panel__kicker">Описание</p>
+                  <h1 className="panel__title panel__title--sm">{exhibit.title}</h1>
+                </div>
+                <button type="button" className="btn-ghost about-head__back" onClick={() => goTab("home")}>
+                  На главную
+                </button>
+              </div>
               <div className="page-head__rule" />
             </header>
 
@@ -1304,6 +1249,31 @@ export function App({ preview }: { preview?: KioskPreview } = {}) {
                       <AudioPlayer src={audio} active={tab === "about"} title="Аудиогид" />
                     </div>
                   ) : null}
+                  {galleryIds.length > 0 || video ? (
+                    <div className="about-media__links" aria-label="Медиа экспоната">
+                      {galleryIds.length > 0 ? (
+                        <button
+                          type="button"
+                          className="btn-red about-media__link"
+                          onClick={() => goTab("gallery")}
+                        >
+                          Галерея
+                          <span className="about-media__link-count">
+                            {String(galleryIds.length).padStart(2, "0")}
+                          </span>
+                        </button>
+                      ) : null}
+                      {video ? (
+                        <button
+                          type="button"
+                          className="btn-ghost about-media__link"
+                          onClick={() => goTab("video")}
+                        >
+                          Видео
+                        </button>
+                      ) : null}
+                    </div>
+                  ) : null}
                 </aside>
               </div>
 
@@ -1333,15 +1303,20 @@ export function App({ preview }: { preview?: KioskPreview } = {}) {
                   <p className="panel__kicker">Галерея</p>
                   <h1 className="panel__title panel__title--sm">{exhibit.title}</h1>
                 </div>
-                <div className="gallery-view__count" aria-live="polite">
-                  {galleryIds.length ? (
-                    <>
-                      <strong>{String(galleryIdx + 1).padStart(2, "0")}</strong>
-                      <span>/ {String(galleryIds.length).padStart(2, "0")}</span>
-                    </>
-                  ) : (
-                    <span>нет кадров</span>
-                  )}
+                <div className="gallery-view__top-aside">
+                  <div className="gallery-view__count" aria-live="polite">
+                    {galleryIds.length ? (
+                      <>
+                        <strong>{String(galleryIdx + 1).padStart(2, "0")}</strong>
+                        <span>/ {String(galleryIds.length).padStart(2, "0")}</span>
+                      </>
+                    ) : (
+                      <span>нет кадров</span>
+                    )}
+                  </div>
+                  <button type="button" className="btn-ghost" onClick={() => goTab("about")}>
+                    К описанию
+                  </button>
                 </div>
               </header>
 
@@ -1410,8 +1385,15 @@ export function App({ preview }: { preview?: KioskPreview } = {}) {
         {exhibit && tab === "video" && (
           <section className="panel panel--video" key={`video-${screenKey}`}>
             <header className="video-head">
-              <p className="panel__kicker">Видео</p>
-              <h1 className="panel__title panel__title--sm">{exhibit.title}</h1>
+              <div className="video-head__row">
+                <div>
+                  <p className="panel__kicker">Видео</p>
+                  <h1 className="panel__title panel__title--sm">{exhibit.title}</h1>
+                </div>
+                <button type="button" className="btn-ghost" onClick={() => goTab("about")}>
+                  К описанию
+                </button>
+              </div>
               <div className="page-head__rule" />
             </header>
 

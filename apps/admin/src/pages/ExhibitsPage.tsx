@@ -14,7 +14,11 @@ import { PageShell } from "../components/ui/PageShell";
 import { Alert } from "../components/ui/Alert";
 import { Card } from "../components/ui/Card";
 import { useConfirm } from "../components/ui/confirm";
-import { RichTextEditor } from "../components/RichTextEditor";
+import {
+  normalizeEditorHtml,
+  RichTextEditor,
+  toEditorHtml,
+} from "../components/RichTextEditor";
 
 type MediaRef = { id: string; url: string; filename?: string };
 
@@ -76,6 +80,44 @@ const emptyForm = (): FormState => ({
   gameExe: "",
 });
 
+/** Stable snapshot for dirty detection (ignore TipTap cosmetic HTML differences). */
+function formFingerprint(f: FormState): string {
+  return JSON.stringify({
+    title: f.title,
+    summary: f.summary,
+    body: normalizeEditorHtml(toEditorHtml(f.body)),
+    specsText: f.specsText,
+    heroImageId: f.heroImageId,
+    galleryIds: f.galleryIds,
+    videoId: f.videoId,
+    audioId: f.audioId,
+    gameTitle: f.gameTitle || "Играть",
+    gameShareFolder: f.gameShareFolder || "",
+    gameExe: f.gameExe || "",
+  });
+}
+
+function exhibitToForm(e: Exhibit): FormState {
+  return {
+    title: e.title,
+    summary: e.summary,
+    body: e.body,
+    specsText: formatSpecsText(e.specs ?? []),
+    heroImageId: e.heroImageId,
+    galleryIds: e.galleryIds,
+    videoId: e.videoId,
+    audioId: e.audioId,
+    heroPreview: e.heroImage?.url ?? null,
+    videoPreview: e.video?.url ?? null,
+    audioPreview: e.audio?.url ?? null,
+    audioName: e.audio?.filename ?? null,
+    galleryPreviews: e.gallery ?? [],
+    gameTitle: e.gameTitle || "Играть",
+    gameShareFolder: e.gameShareFolder || "",
+    gameExe: e.gameExe || "",
+  };
+}
+
 export function ExhibitsPage() {
   const { canEdit } = useAuth();
   const confirmDialog = useConfirm();
@@ -90,9 +132,14 @@ export function ExhibitsPage() {
   const [uploading, setUploading] = useState<"hero" | "video" | "gallery" | "audio" | null>(
     null
   );
-  const [dirty, setDirty] = useState(false);
+  const [baseline, setBaseline] = useState(() => formFingerprint(emptyForm()));
   const [savedNote, setSavedNote] = useState("");
   const [gameShare, setGameShare] = useState<GameShareDto | null>(null);
+
+  const dirty = useMemo(
+    () => mode === "edit" && formFingerprint(form) !== baseline,
+    [mode, form, baseline]
+  );
 
   async function load() {
     setList(await api<Exhibit[]>("/api/exhibits"));
@@ -130,40 +177,24 @@ export function ExhibitsPage() {
 
   function patchForm(patch: Partial<FormState>) {
     setForm((f) => ({ ...f, ...patch }));
-    setDirty(true);
   }
 
   function openCreate() {
+    const next = emptyForm();
     setEditId(null);
-    setForm(emptyForm());
+    setForm(next);
+    setBaseline(formFingerprint(next));
     setMode("edit");
-    setDirty(false);
     setError("");
     setSavedNote("");
   }
 
   function openEdit(e: Exhibit) {
+    const next = exhibitToForm(e);
     setEditId(e.id);
-    setForm({
-      title: e.title,
-      summary: e.summary,
-      body: e.body,
-      specsText: formatSpecsText(e.specs ?? []),
-      heroImageId: e.heroImageId,
-      galleryIds: e.galleryIds,
-      videoId: e.videoId,
-      audioId: e.audioId,
-      heroPreview: e.heroImage?.url ?? null,
-      videoPreview: e.video?.url ?? null,
-      audioPreview: e.audio?.url ?? null,
-      audioName: e.audio?.filename ?? null,
-      galleryPreviews: e.gallery ?? [],
-      gameTitle: e.gameTitle || "Играть",
-      gameShareFolder: e.gameShareFolder || "",
-      gameExe: e.gameExe || "",
-    });
+    setForm(next);
+    setBaseline(formFingerprint(next));
     setMode("edit");
-    setDirty(false);
     setError("");
     setSavedNote("");
   }
@@ -182,7 +213,7 @@ export function ExhibitsPage() {
     setMode("list");
     setEditId(null);
     setForm(emptyForm());
-    setDirty(false);
+    setBaseline(formFingerprint(emptyForm()));
     setError("");
   }
 
@@ -217,7 +248,6 @@ export function ExhibitsPage() {
             { id: uploaded.id, url: uploaded.url, filename: uploaded.filename },
           ],
         }));
-        setDirty(true);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Ошибка загрузки");
@@ -232,7 +262,6 @@ export function ExhibitsPage() {
       galleryIds: f.galleryIds.filter((x) => x !== id),
       galleryPreviews: f.galleryPreviews.filter((x) => x.id !== id),
     }));
-    setDirty(true);
   }
 
   const specsPreview = useMemo(() => parseSpecsText(form.specsText), [form.specsText]);
@@ -250,15 +279,23 @@ export function ExhibitsPage() {
 
   function applyGameFolderInput(raw: string) {
     const normalized = normalizeGameShareFolder(gameShare?.unc, raw);
-    patchForm({ gameShareFolder: normalized, gameExe: "" });
+    setForm((f) => {
+      if (f.gameShareFolder === normalized) return f;
+      return { ...f, gameShareFolder: normalized, gameExe: "" };
+    });
   }
 
   function applyFullGamePath(raw: string) {
     const normalized = normalizeGameShareFolder(gameShare?.unc, raw);
-    const folder = gameShare?.folders?.find((f) => f.name === normalized);
-    patchForm({
-      gameShareFolder: normalized,
-      gameExe: folder?.exes?.[0] || form.gameExe || "",
+    setForm((f) => {
+      const folder = gameShare?.folders?.find((x) => x.name === normalized);
+      const nextExe = folder?.exes?.[0] || f.gameExe || "";
+      if (f.gameShareFolder === normalized && f.gameExe === nextExe) return f;
+      return {
+        ...f,
+        gameShareFolder: normalized,
+        gameExe: nextExe,
+      };
     });
   }
 
@@ -297,25 +334,9 @@ export function ExhibitsPage() {
         : await api<Exhibit>("/api/exhibits", { method: "POST", json: payload });
 
       setEditId(saved.id);
-      setForm({
-        title: saved.title,
-        summary: saved.summary,
-        body: saved.body,
-        specsText: formatSpecsText(saved.specs ?? []),
-        heroImageId: saved.heroImageId,
-        galleryIds: saved.galleryIds,
-        videoId: saved.videoId,
-        audioId: saved.audioId,
-        heroPreview: saved.heroImage?.url ?? null,
-        videoPreview: saved.video?.url ?? null,
-        audioPreview: saved.audio?.url ?? null,
-        audioName: saved.audio?.filename ?? null,
-        galleryPreviews: saved.gallery ?? [],
-        gameTitle: saved.gameTitle || "Играть",
-        gameShareFolder: saved.gameShareFolder || "",
-        gameExe: saved.gameExe || "",
-      });
-      setDirty(false);
+      const next = exhibitToForm(saved);
+      setForm(next);
+      setBaseline(formFingerprint(next));
       setMode("edit");
       setSavedNote("Сохранено.");
       await load();
@@ -377,7 +398,7 @@ export function ExhibitsPage() {
         setMode("list");
         setEditId(null);
         setForm(emptyForm());
-        setDirty(false);
+        setBaseline(formFingerprint(emptyForm()));
       }
       await load();
     } catch (err) {
@@ -468,7 +489,7 @@ export function ExhibitsPage() {
                 <div className="exhibit-editor__body-label">
                   <span className="exhibit-editor__field-title">Полный текст</span>
                   <span className="field-hint">
-                    Раздел «Описание» на киоске — форматирование сохраняется
+                    Раздел «Описание» на киоске — форматирование и таблицы сохраняются
                   </span>
                   <RichTextEditor
                     key={editId ?? "new"}
@@ -835,7 +856,12 @@ export function ExhibitsPage() {
     <PageShell
       section="Контент"
       title="Экспонаты"
-      description={`${list.length} шт. · карточки, превью киоска и быстрый доступ к медиа`}
+      description={
+        query.trim()
+          ? `Найдено ${listStats.total} из ${list.length}`
+          : `${list.length} ${list.length === 1 ? "экспонат" : list.length > 1 && list.length < 5 ? "экспоната" : "экспонатов"}`
+      }
+      wide
       actions={
         <>
           <label className="exhibits-search">
@@ -843,7 +869,7 @@ export function ExhibitsPage() {
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Поиск…"
+              placeholder="Название или текст…"
             />
           </label>
           {canEdit && (
@@ -855,111 +881,127 @@ export function ExhibitsPage() {
       }
       banner={error ? <Alert tone="error">{error}</Alert> : undefined}
     >
-      <section className="exhibits-stats" aria-label="Сводка по экспонатам">
-        <Card className="exhibits-stat">
-          <div className="exhibits-stat__label">Найдено</div>
-          <div className="exhibits-stat__value">{listStats.total}</div>
-        </Card>
-        <Card className="exhibits-stat">
-          <div className="exhibits-stat__label">С обложкой</div>
-          <div className="exhibits-stat__value">{listStats.withHero}</div>
-        </Card>
-        <Card className="exhibits-stat">
-          <div className="exhibits-stat__label">С галереей</div>
-          <div className="exhibits-stat__value">{listStats.withGallery}</div>
-        </Card>
-        <Card className="exhibits-stat">
-          <div className="exhibits-stat__label">С видео / аудио</div>
-          <div className="exhibits-stat__value">
-            {listStats.withVideo} / {listStats.withAudio}
-          </div>
-        </Card>
-        <Card className="exhibits-stat">
-          <div className="exhibits-stat__label">С игрой</div>
-          <div className="exhibits-stat__value">{listStats.withGame}</div>
-        </Card>
-      </section>
-
-      <section className="exhibits-grid" aria-label="Список экспонатов">
-        {filtered.map((e) => (
-          <Card
-            key={e.id}
-            className="exhibit-card"
-            actions={
-              <div className="exhibit-card__actions">
-                <button type="button" className="btn secondary" onClick={() => openEdit(e)}>
-                  {canEdit ? "Открыть" : "Смотреть"}
-                </button>
-                <button type="button" className="btn secondary" onClick={() => void openPreview(e.id)}>
-                  Как на киоске
-                </button>
-                {canEdit ? (
-                  <button type="button" className="btn danger" onClick={() => remove(e.id)}>
-                    Удалить
-                  </button>
-                ) : null}
-              </div>
-            }
-          >
-            <div className="exhibit-card__body" onDoubleClick={() => openEdit(e)}>
-              <div className="exhibit-card__thumb">
-                {e.heroImage ? (
-                  <img src={e.heroImage.url} alt="" />
-                ) : (
-                  <div className="exhibits-table__thumb exhibits-table__thumb--empty" />
-                )}
-              </div>
-              <div className="exhibit-card__content">
-                <button type="button" className="exhibits-table__link exhibit-card__title" onClick={() => openEdit(e)}>
-                  {e.title || "Без названия"}
-                </button>
-                <div className="muted exhibits-table__summary">
-                  {e.summary || "Нет краткого описания"}
-                </div>
-                <div className="exhibit-card__chips">
-                  <span className={`badge ${e.heroImageId ? "ok" : "offline"}`}>
-                    {e.heroImageId ? "Обложка" : "Без обложки"}
-                  </span>
-                  <span className={`badge ${e.galleryIds.length ? "ok" : "offline"}`}>
-                    Галерея · {e.galleryIds.length}
-                  </span>
-                  <span className={`badge ${e.videoId ? "ok" : "offline"}`}>
-                    {e.videoId ? "Видео" : "Без видео"}
-                  </span>
-                  <span className={`badge ${e.audioId ? "ok" : "offline"}`}>
-                    {e.audioId ? "Аудио" : "Без аудио"}
-                  </span>
-                  <span className={`badge ${e.specs?.length ? "ok" : "offline"}`}>
-                    ТТХ · {e.specs?.length ?? 0}
-                  </span>
-                  <span className={`badge ${e.gameShareFolder && e.gameExe ? "warn" : "offline"}`}>
-                    {e.gameShareFolder && e.gameExe ? "Игра" : "Без игры"}
-                  </span>
-                </div>
-                <div className="exhibit-card__meta muted">
-                  <span>v{e.contentVersion}</span>
-                  <span>{e.body ? "Есть описание" : "Без полного текста"}</span>
-                </div>
-              </div>
-            </div>
-          </Card>
-        ))}
-      </section>
-
-      {!filtered.length ? (
-        <Card>
-          <div className="exhibits-empty">
-            {query ? "Ничего не найдено" : "Пока нет экспонатов — создайте первый"}
-            {canEdit && !query ? (
-              <div>
-                <button type="button" className="btn" onClick={openCreate}>
-                  Создать
-                </button>
-              </div>
-            ) : null}
-          </div>
-        </Card>
+      {list.length > 0 ? (
+        <div className="exhibits-toolbar" aria-label="Сводка">
+          <ul className="exhibits-toolbar__stats">
+            <li>
+              <strong>{listStats.withHero}</strong>
+              <span>обложка</span>
+            </li>
+            <li>
+              <strong>{listStats.withGallery}</strong>
+              <span>галерея</span>
+            </li>
+            <li>
+              <strong>{listStats.withVideo}</strong>
+              <span>видео</span>
+            </li>
+            <li>
+              <strong>{listStats.withAudio}</strong>
+              <span>аудио</span>
+            </li>
+            <li>
+              <strong>{listStats.withGame}</strong>
+              <span>игра</span>
+            </li>
+          </ul>
+        </div>
       ) : null}
+
+      {filtered.length ? (
+        <section className="exhibits-catalog" aria-label="Список экспонатов">
+          {filtered.map((e) => {
+            const hasGame = Boolean(e.gameShareFolder && e.gameExe);
+            const mediaBits = [
+              e.galleryIds.length ? `Галерея ${e.galleryIds.length}` : null,
+              e.videoId ? "Видео" : null,
+              e.audioId ? "Аудио" : null,
+              e.specs?.length ? `ТТХ ${e.specs.length}` : null,
+              hasGame ? "Игра" : null,
+            ].filter(Boolean) as string[];
+
+            return (
+              <article key={e.id} className="exhibit-tile">
+                <button
+                  type="button"
+                  className="exhibit-tile__hit"
+                  onClick={() => openEdit(e)}
+                  aria-label={`Открыть «${e.title || "Без названия"}»`}
+                >
+                  <div className="exhibit-tile__media">
+                    {e.heroImage ? (
+                      <img src={e.heroImage.url} alt="" loading="lazy" />
+                    ) : (
+                      <div className="exhibit-tile__ph" aria-hidden>
+                        <span>{(e.title || "?").slice(0, 1).toUpperCase()}</span>
+                      </div>
+                    )}
+                    <div className="exhibit-tile__shade" aria-hidden />
+                    <div className="exhibit-tile__caption">
+                      <h2 className="exhibit-tile__title">{e.title || "Без названия"}</h2>
+                      {e.summary ? <p className="exhibit-tile__lead">{e.summary}</p> : null}
+                    </div>
+                  </div>
+                </button>
+
+                <div className="exhibit-tile__foot">
+                  <div className="exhibit-tile__tags" aria-label="Медиа">
+                    {mediaBits.length ? (
+                      mediaBits.map((bit) => (
+                        <span key={bit} className="exhibit-tile__tag">
+                          {bit}
+                        </span>
+                      ))
+                    ) : (
+                      <span className="exhibit-tile__tag exhibit-tile__tag--muted">Только текст</span>
+                    )}
+                    {!e.heroImageId ? (
+                      <span className="exhibit-tile__tag exhibit-tile__tag--warn">Нет обложки</span>
+                    ) : null}
+                  </div>
+                  <div className="exhibit-tile__actions">
+                    <button type="button" className="btn secondary" onClick={() => openEdit(e)}>
+                      {canEdit ? "Править" : "Открыть"}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn secondary"
+                      onClick={() => void openPreview(e.id)}
+                    >
+                      Превью
+                    </button>
+                    {canEdit ? (
+                      <button type="button" className="btn danger" onClick={() => remove(e.id)}>
+                        Удалить
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+              </article>
+            );
+          })}
+        </section>
+      ) : (
+        <div className="exhibits-empty">
+          <p className="exhibits-empty__title">
+            {query ? "Ничего не найдено" : "Пока нет экспонатов"}
+          </p>
+          <p className="exhibits-empty__text">
+            {query
+              ? "Попробуйте другой запрос или сбросьте поиск."
+              : "Создайте карточку — на киоске появятся описание, медиа и игра."}
+          </p>
+          {query ? (
+            <button type="button" className="btn secondary" onClick={() => setQuery("")}>
+              Сбросить поиск
+            </button>
+          ) : canEdit ? (
+            <button type="button" className="btn" onClick={openCreate}>
+              Создать экспонат
+            </button>
+          ) : null}
+        </div>
+      )}
     </PageShell>
   );
 }
