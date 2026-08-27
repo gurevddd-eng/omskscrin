@@ -161,7 +161,10 @@ export async function probeKioskById(id: string) {
   const health = await fetchHealth(kiosk.hostname, kiosk.healthPort);
   if (!health?.ok) {
     probeStatus = "no_software";
-    probeMessage = `Нет ответа health на порту ${kiosk.healthPort} (агент/софт не запущен)`;
+    const hadInstall = Boolean(kiosk.lastInstallAt) || kiosk.installStatus === "ok";
+    probeMessage = hadInstall
+      ? `Агент не отвечает на порту ${kiosk.healthPort} — нажмите «Запуск UI» или переустановите софт`
+      : `Софт не установлен или агент не запущен (порт ${kiosk.healthPort})`;
   } else {
     const hbOk = isOnline(kiosk.lastSeenAt);
     const syncBad = kiosk.syncStatus === "error";
@@ -182,8 +185,9 @@ export async function probeKioskById(id: string) {
       probeStatus,
       probeMessage,
       lastProbeAt: new Date(),
-      appVersion: health?.appVersion || undefined,
-      softwareVersion: health?.softwareVersion || undefined,
+      // Only trust versions from a live health response (not stale heartbeat leftovers)
+      appVersion: health?.ok ? health.appVersion || undefined : undefined,
+      softwareVersion: health?.ok ? health.softwareVersion || undefined : undefined,
     },
     include: { exhibit: { select: { title: true } } },
   });

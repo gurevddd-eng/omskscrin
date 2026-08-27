@@ -153,7 +153,7 @@ export async function requestKioskSoftwareUpdate(
     return {
       ok: false,
       mode: "error",
-      message: "Not found",
+      message: "Киоск не найден",
       targetSoftwareVersion: target,
       localSoftwareVersion: null,
       kiosk: null,

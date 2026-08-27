@@ -170,10 +170,16 @@ if ($DeployPassword) { $runPw = $DeployPassword }
 if ($isLocal) {
   Write-Stage "connecting"
   Write-Stage "starting"
-  $msg = & $startBlock -Port $UiPort -HealthPort $HealthPort -RunAsUser $DeployUser -RunAsPassword $DeployPassword
-  Write-Stage "done"
-  Write-Output "START_OK: $msg"
-  exit 0
+  try {
+    $msg = & $startBlock -Port $UiPort -HealthPort $HealthPort -RunAsUser $DeployUser -RunAsPassword $DeployPassword
+    Write-Stage "done"
+    Write-Output "START_OK: $msg"
+    exit 0
+  } catch {
+    Write-Stage "error"
+    Write-Output "START_ERR: $($_.Exception.Message)"
+    exit 1
+  }
 }
 
 $cred = $null
@@ -201,16 +207,34 @@ Write-Host "Connecting via WinRM to $Hostname ..."
 try {
   $session = New-PSSession @sessionParams
 } catch {
-  throw "WinRM connect failed to '$Hostname': $($_.Exception.Message)"
+  Write-Stage "error"
+  Write-Output "START_ERR: WinRM connect failed to '$Hostname': $($_.Exception.Message)"
+  exit 1
 }
 
 try {
   Write-Stage "starting"
   Write-Host "Starting agent and Edge UI on interactive desktop..."
-  $result = Invoke-Command -Session $session -ScriptBlock $startBlock -ArgumentList $UiPort, $HealthPort, $DeployUser, $DeployPassword
-  Write-Stage "done"
-  Write-Output "START_OK: $result"
-  exit 0
+  try {
+    $result = Invoke-Command -Session $session -ScriptBlock $startBlock -ArgumentList $UiPort, $HealthPort, $DeployUser, $DeployPassword
+    Write-Stage "done"
+    Write-Output "START_OK: $result"
+    exit 0
+  } catch {
+    $remote = $_.Exception.Message
+    if ($_.Exception.InnerException -and $_.Exception.InnerException.Message) {
+      $remote = $_.Exception.InnerException.Message
+    }
+    # Remote script throws often wrap the useful text after the last colon-ish payload
+    if ($remote -match 'StellaKiosk not installed|Task StellaKioskAgent missing|health .*did not respond|Edge UI did not start|Edge binary not found|Install software first') {
+      # keep as-is
+    } elseif ($_.ErrorDetails -and $_.ErrorDetails.Message) {
+      $remote = $_.ErrorDetails.Message
+    }
+    Write-Stage "error"
+    Write-Output "START_ERR: $remote"
+    exit 1
+  }
 }
 finally {
   if ($session) { Remove-PSSession $session -ErrorAction SilentlyContinue }

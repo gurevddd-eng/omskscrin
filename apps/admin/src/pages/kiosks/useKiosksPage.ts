@@ -147,19 +147,28 @@ export function useKiosksPage() {
   );
   const uiStartNow = useMemo(() => kiosks.some((k) => k.uiStartStatus === "running"), [kiosks]);
   const uiStopNow = useMemo(() => kiosks.some((k) => k.uiStopStatus === "running"), [kiosks]);
+  const gameCopyNow = useMemo(
+    () =>
+      kiosks.some((k) => {
+        const s = k.gameCopy?.status;
+        return s === "copying" || s === "launching" || s === "running";
+      }),
+    [kiosks]
+  );
   const otaWaitingNow = useMemo(
     () => kiosks.some((k) => k.otaPending || otaWaiting[k.id]),
     [kiosks, otaWaiting]
   );
 
   useEffect(() => {
-    const busy = installingNow || policyClearNow || uiStartNow || uiStopNow || otaWaitingNow;
+    const busy =
+      installingNow || policyClearNow || uiStartNow || uiStopNow || otaWaitingNow || gameCopyNow;
     const ms = busy ? 2500 : 10000;
     const t = setInterval(() => {
       load().catch(() => undefined);
     }, ms);
     return () => clearInterval(t);
-  }, [installingNow, policyClearNow, uiStartNow, uiStopNow, otaWaitingNow, load]);
+  }, [installingNow, policyClearNow, uiStartNow, uiStopNow, otaWaitingNow, gameCopyNow, load]);
 
   const stats = useMemo(() => {
     const online = kiosks.filter((k) => k.online).length;

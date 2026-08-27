@@ -225,6 +225,66 @@ let gameCopy = {
   message: null,
   updatedAt: null,
 };
+
+function listInstalledGames() {
+  try {
+    if (!fs.existsSync(gamesRoot)) return [];
+    return fs
+      .readdirSync(gamesRoot, { withFileTypes: true })
+      .filter((d) => d.isDirectory() && !d.name.startsWith("."))
+      .map((d) => d.name)
+      .slice(0, 80);
+  } catch {
+    return [];
+  }
+}
+
+function folderBytes(dir) {
+  let total = 0;
+  const stack = [dir];
+  let n = 0;
+  while (stack.length && n < 50_000) {
+    n += 1;
+    const cur = stack.pop();
+    let entries = [];
+    try {
+      entries = fs.readdirSync(cur, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const e of entries) {
+      const full = path.join(cur, e.name);
+      if (e.isDirectory()) stack.push(full);
+      else if (e.isFile()) {
+        try {
+          total += fs.statSync(full).size;
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+  }
+  return total;
+}
+
+function formatBytes(n) {
+  if (!Number.isFinite(n) || n <= 0) return "0 Б";
+  if (n < 1024) return `${n} Б`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} КБ`;
+  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} МБ`;
+  return `${(n / (1024 * 1024 * 1024)).toFixed(2)} ГБ`;
+}
+
+function patchGameCopy(partial) {
+  gameCopy = {
+    ...gameCopy,
+    ...partial,
+    updatedAt: new Date().toISOString(),
+  };
+  // Notify admin ASAP (do not await — launch/copy must stay responsive)
+  void pushHeartbeat();
+}
+
 const omskekranRoot = path.join(process.env.ProgramData || "C:\\ProgramData", "omskekran");
 const contentRoot = path.join(omskekranRoot, "content");
 const gamesRoot = path.join(omskekranRoot, "games");
@@ -560,15 +620,15 @@ const healthServer = http.createServer(async (req, res) => {
           exeRel = exeRel.slice(localName.length).replace(/^[\\\/]+/, "");
         }
 
-        gameCopy = {
+        gameLaunchInProgress = true;
+        patchGameCopy({
           status: "copying",
           folder: localName,
           percent: null,
           copiedBytes: null,
           totalBytes: null,
           message: `Копирование с ${uncFolder}`,
-          updatedAt: new Date().toISOString(),
-        };
+        });
 
         // SYSTEM cannot access domain SMB shares — copy as interactive console user.
         const runRobocopyAsUser = () =>
@@ -654,12 +714,43 @@ const healthServer = http.createServer(async (req, res) => {
             });
           });
 
-        const robocode = await runRobocopyAsUser();
+        const progressIv = setInterval(() => {
+          try {
+            const copied = folderBytes(localFolder);
+            patchGameCopy({
+              status: "copying",
+              folder: localName,
+              copiedBytes: copied,
+              percent: null,
+              message: `Копирование · ${formatBytes(copied)}`,
+            });
+          } catch {
+            /* ignore */
+          }
+        }, 2000);
+
+        let robocode = 16;
+        try {
+          robocode = await runRobocopyAsUser();
+        } finally {
+          clearInterval(progressIv);
+        }
         // Robocopy: 0..7 are success (0=no change, 1..7 are copied/needs attention)
         const okCopy = robocode >= 0 && robocode <= 7;
         if (!okCopy) {
           console.warn(`[stella-agent] robocopy code=${robocode} unc=${uncFolder}`);
         }
+
+        const copiedFinal = folderBytes(localFolder);
+        patchGameCopy({
+          status: okCopy ? "copying" : "error",
+          folder: localName,
+          copiedBytes: copiedFinal,
+          percent: okCopy ? 100 : null,
+          message: okCopy
+            ? `Скопировано · ${formatBytes(copiedFinal)}`
+            : `Ошибка копирования (код ${robocode})`,
+        });
 
         const safeExeRel = exeRel.replace(/[\/\\]+/g, path.sep);
         const candidates = [
@@ -694,15 +785,15 @@ const healthServer = http.createServer(async (req, res) => {
         }
 
         if (!localExePath || !isPathInside(localFolder, localExePath)) {
-          gameCopy = {
+          gameLaunchInProgress = false;
+          patchGameCopy({
             status: "error",
             folder: localName,
             percent: null,
-            copiedBytes: null,
+            copiedBytes: copiedFinal,
             totalBytes: null,
             message: `Игра не найдена (robocopy=${robocode})`,
-            updatedAt: new Date().toISOString(),
-          };
+          });
           sendJson(res, 404, {
             ok: false,
             error: okCopy
@@ -712,17 +803,15 @@ const healthServer = http.createServer(async (req, res) => {
           return;
         }
 
-        gameCopy = {
+        patchGameCopy({
           status: "launching",
-          folder,
+          folder: localName,
           percent: 100,
-          copiedBytes: null,
+          copiedBytes: copiedFinal,
           totalBytes: null,
           message: path.basename(localExePath),
-          updatedAt: new Date().toISOString(),
-        };
+        });
 
-        gameLaunchInProgress = true;
         // Keep Edge kiosk running; game is started in the console session and raised on top.
 
         const cached = readCachedConsoleUser() || "";
@@ -831,12 +920,27 @@ const healthServer = http.createServer(async (req, res) => {
           "  Write-Output (\"fail:\" + $code)\n" +
           "  exit 4\n" +
           "}\n" +
+          "Write-Output 'running'\n" +
           "while (Get-Process -Name $exeName -ErrorAction SilentlyContinue) { Start-Sleep -Seconds 1 }\n" +
           "try { Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue | Out-Null } catch {}\n" +
           "Write-Output 'ok'\n";
 
         await new Promise((resolve, reject) => {
-          const ps = spawnPowerShell(["-Command", script]);
+          const ps = spawnPowerShell(["-Command", script], { capture: true });
+          let sawRunning = false;
+          ps.stdout.on("data", (d) => {
+            const text = String(d);
+            if (!sawRunning && text.includes("running")) {
+              sawRunning = true;
+              patchGameCopy({
+                status: "running",
+                folder: localName,
+                percent: 100,
+                copiedBytes: copiedFinal,
+                message: path.basename(localExePath),
+              });
+            }
+          });
           ps.on("error", (err) => reject(err));
           ps.on("close", (code) => {
             if (code === 0) resolve(null);
@@ -844,28 +948,26 @@ const healthServer = http.createServer(async (req, res) => {
           });
         });
 
-        gameCopy = {
+        patchGameCopy({
           status: "idle",
-          folder,
+          folder: localName,
           percent: null,
-          copiedBytes: null,
+          copiedBytes: copiedFinal,
           totalBytes: null,
-          message: null,
-          updatedAt: new Date().toISOString(),
-        };
+          message: "Установлена на диске",
+        });
         gameLaunchInProgress = false;
         sendJson(res, 200, { ok: true });
       } catch (e) {
         gameLaunchInProgress = false;
-        gameCopy = {
+        patchGameCopy({
           status: "error",
-          folder: null,
+          folder: gameCopy.folder,
           percent: null,
-          copiedBytes: null,
+          copiedBytes: gameCopy.copiedBytes,
           totalBytes: null,
           message: e instanceof Error ? e.message : String(e),
-          updatedAt: new Date().toISOString(),
-        };
+        });
         sendJson(res, 500, { ok: false, error: e instanceof Error ? e.message : String(e) });
       }
     });
@@ -1002,6 +1104,8 @@ async function pushHeartbeat() {
         softwareVersion,
         hostname,
         gameShare: gameShareFolders.length ? { folders: gameShareFolders } : undefined,
+        gameCopy,
+        installedGames: listInstalledGames(),
       }),
     });
     if (!res.ok) return;

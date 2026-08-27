@@ -1,5 +1,6 @@
 import type { KioskDto } from "@stella/shared";
 import {
+  GAME_COPY_STATUS_LABEL,
   INSTALL_STATUS_LABEL,
   POLICY_CLEAR_STATUS_LABEL,
   UI_START_STATUS_LABEL,
@@ -37,6 +38,10 @@ export function kioskBusyLabel(k: KioskDto) {
   if (k.policyClearStatus === "running") return POLICY_CLEAR_STATUS_LABEL.running;
   if (k.installStatus === "running" || k.installStatus === "queued") {
     return INSTALL_STATUS_LABEL[k.installStatus];
+  }
+  const gs = k.gameCopy?.status;
+  if (gs === "copying" || gs === "launching" || gs === "running") {
+    return GAME_COPY_STATUS_LABEL[gs];
   }
   return null;
 }

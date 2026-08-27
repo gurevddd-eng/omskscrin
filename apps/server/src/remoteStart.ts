@@ -148,13 +148,20 @@ async function runStartUiJob(id: string) {
       return;
     }
 
-    // Script threw (e.g. Edge never appeared) — surface as error, not false success
     const failMsg =
       summarizeDeployOutput(text, result.code) ||
-      (/Edge UI did not start/i.test(text) ? "Edge UI не запустился" : null) ||
-      "Не удалось запустить";
+      (/START_ERR:/i.test(text)
+        ? parseOkLine(text, /START_ERR:/i, "Не удалось запустить")
+        : null) ||
+      "Не удалось запустить UI";
     await setUiStartJob(id, "error", "error", failMsg);
-    scheduleJobClear(id, 30_000);
+    // Refresh probe so admin sees no_software vs degraded consistently
+    try {
+      await probeKioskById(id);
+    } catch {
+      /* ignore */
+    }
+    scheduleJobClear(id, 45_000);
   } catch (e) {
     await setUiStartJob(id, "error", "error", e instanceof Error ? e.message : "Start failed");
     scheduleJobClear(id, 30_000);
@@ -174,14 +181,28 @@ export async function requestStartKioskRuntime(id: string): Promise<{
     where: { id },
     include: { exhibit: { select: { title: true } } },
   });
-  if (!kiosk) return { ok: false, alreadyRunning: false, message: "Not found", kiosk: null };
+  if (!kiosk) return { ok: false, alreadyRunning: false, message: "Киоск не найден", kiosk: null };
 
   const isLocal = isLocalKiosk(kiosk.hostname);
   if (!isLocal && !deployCredentialsOk()) {
     return {
       ok: false,
       alreadyRunning: false,
-      message: "Задайте DEPLOY_USER / DEPLOY_PASSWORD в .env",
+      message: "Задайте доменную учётку в Настройки → Windows",
+      kiosk: applyUiStartToDto(mapKiosk(kiosk)),
+    };
+  }
+
+  // Fast local hint: no recent install and probe already says missing software
+  if (
+    kiosk.probeStatus === "no_software" &&
+    !kiosk.lastInstallAt &&
+    kiosk.installStatus !== "ok"
+  ) {
+    return {
+      ok: false,
+      alreadyRunning: false,
+      message: "Софт ещё не установлен — сначала нажмите «Установить»",
       kiosk: applyUiStartToDto(mapKiosk(kiosk)),
     };
   }

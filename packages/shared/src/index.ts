@@ -233,6 +233,20 @@ export interface GameCopyDto {
   updatedAt: string | null;
 }
 
+export const GAME_COPY_STATUS_LABEL: Record<GameCopyStatus, string> = {
+  idle: "Игра на диске",
+  copying: "Копирование игры…",
+  launching: "Запуск игры…",
+  running: "Игра запущена",
+  error: "Ошибка игры",
+};
+
+export const GAME_COPY_STATUS_STEPS: { id: GameCopyStatus; label: string }[] = [
+  { id: "copying", label: "Копирование" },
+  { id: "launching", label: "Запуск" },
+  { id: "running", label: "Работает" },
+];
+
 export const DEFAULT_GAME_SHARE_UNC = "\\\\HYDRALISK3\\Patriot\\Игры парк победы";
 
 /** Normalize Windows/UNC path separators and trailing slashes. */
@@ -350,6 +364,8 @@ export interface KioskDto {
   uiStopMessage: string | null;
   /** Live robocopy / launch of exhibit game from the kiosk agent. */
   gameCopy?: GameCopyDto | null;
+  /** Local game folders already present under ProgramData\\omskekran\\games */
+  installedGames?: string[] | null;
 }
 
 export interface HeartbeatRequest {
@@ -363,6 +379,7 @@ export interface HeartbeatRequest {
     folders: GameShareFolder[];
   };
   gameCopy?: GameCopyDto;
+  installedGames?: string[];
 }
 
 export interface ManifestFile {

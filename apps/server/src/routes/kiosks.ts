@@ -26,7 +26,7 @@ import { createHash } from "node:crypto";
 import { createReadStream, existsSync } from "node:fs";
 import { cancelKioskInstall, clearInstallCancelRequest, deployPackageReady, startKioskInstall } from "../remoteInstall.js";
 import { enrichKioskDto } from "../kioskDtoEnrich.js";
-import { setGameCopyState } from "../gameCopyState.js";
+import { setGameCopyState, setInstalledGames } from "../gameCopyState.js";
 import { requestClearKioskPolicies } from "../remoteClearPolicies.js";
 import { requestStartKioskRuntime } from "../remoteStart.js";
 import { requestStopKioskRuntime } from "../remoteStop.js";
@@ -109,6 +109,7 @@ const heartbeatSchema = z.object({
       updatedAt: z.string().max(40).nullable().optional(),
     })
     .optional(),
+  installedGames: z.array(z.string().min(1).max(200)).max(80).optional(),
 });
 
 export async function registerKioskRoutes(app: FastifyInstance) {
@@ -427,8 +428,8 @@ export async function registerKioskRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const { id } = request.params as { id: string };
       const result = await requestStartKioskRuntime(id);
-      if (!result.kiosk && result.message === "Not found") {
-        return reply.code(404).send({ error: "Not found" });
+      if (!result.kiosk && /не найден|not found/i.test(result.message)) {
+        return reply.code(404).send({ error: result.message });
       }
       if (!result.ok) {
         return reply.code(400).send({ error: result.message, kiosk: result.kiosk });
@@ -448,8 +449,8 @@ export async function registerKioskRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const { id } = request.params as { id: string };
       const result = await requestKioskSoftwareUpdate(id);
-      if (!result.kiosk && result.message === "Not found") {
-        return reply.code(404).send({ error: "Not found" });
+      if (!result.kiosk && /не найден|not found/i.test(result.message)) {
+        return reply.code(404).send({ error: result.message });
       }
       if (result.mode === "no-package") {
         return reply.code(409).send({ ...result, error: result.message });
@@ -738,6 +739,9 @@ export async function registerKioskRoutes(app: FastifyInstance) {
           message: body.gameCopy.message ?? null,
           updatedAt: body.gameCopy.updatedAt ?? new Date().toISOString(),
         });
+      }
+      if (body.installedGames) {
+        setInstalledGames(k.kioskId, k.hostname, body.installedGames);
       }
       const dto = enrichKioskDto(mapKiosk(k));
       broadcastKioskUpsert(dto);

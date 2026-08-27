@@ -122,6 +122,11 @@ export function KioskDetail(props: KioskDetailProps) {
                   type="button"
                   className="btn secondary"
                   disabled={locked}
+                  title={
+                    k.probeStatus === "no_software"
+                      ? "Если софт не ставили — сначала «Установить». Иначе попробуйте Старт UI."
+                      : "Запустить агент и Edge на интерактивном рабочем столе"
+                  }
                   onClick={() => props.onStart(k.id)}
                 >
                   {props.starting || busyUiStart ? "Запуск…" : "Старт UI"}

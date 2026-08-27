@@ -483,6 +483,51 @@
   gap: 0.65rem;
 }
 
+.kx-life__games {
+  margin-top: 0.85rem;
+  padding-top: 0.85rem;
+  border-top: 1px solid color-mix(in srgb, currentColor 12%, transparent);
+}
+
+.kx-life__games-list {
+  list-style: none;
+  margin: 0.55rem 0 0;
+  padding: 0;
+  display: grid;
+  gap: 0.4rem;
+}
+
+.kx-life__games-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.45rem 0.65rem;
+  border-radius: 0.4rem;
+  background: color-mix(in srgb, currentColor 5%, transparent);
+}
+
+.kx-life__games-name {
+  font-size: 0.9rem;
+  font-weight: 560;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.kx-life__games-tag {
+  flex-shrink: 0;
+  font-size: 0.72rem;
+  letter-spacing: 0.02em;
+  opacity: 0.72;
+}
+
+.kx-life__games-tag.is-run {
+  opacity: 1;
+  color: #0b6e4f;
+  font-weight: 600;
+}
+
 .kx-life__lane {
   padding: 0.8rem 0.9rem;
   border-radius: 12px;

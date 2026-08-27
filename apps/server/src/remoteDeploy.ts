@@ -156,8 +156,50 @@ export function killDeployProcessTree(proc: ChildProcess) {
   }
 }
 
+export function stripAnsi(text: string) {
+  return text.replace(/\u001b\[[0-9;]*[A-Za-z]/g, "").replace(/\x1b\[[0-9;]*[A-Za-z]/g, "");
+}
+
+/** Map common remote-script failures to short Russian operator messages. */
+export function friendlyDeployMessage(raw: string): string | null {
+  const text = stripAnsi(raw);
+  if (/StellaKiosk not installed|not installed at|Task StellaKioskAgent missing|Install software first/i.test(text)) {
+    return "Софт не установлен на киоске — сначала выполните «Установить»";
+  }
+  if (/health :\d+ did not respond|health .*did not respond|Agent task started but health/i.test(text)) {
+    return "Агент не ответил на health-порту — проверьте задачу StellaKioskAgent и логи";
+  }
+  if (/Edge UI did not start|Edge binary not found/i.test(text)) {
+    return /Edge binary not found/i.test(text)
+      ? "Агент запущен, но Microsoft Edge не найден на киоске"
+      : "Агент запущен, но Edge UI не открылся (нужна интерактивная сессия пользователя)";
+  }
+  if (/WinRM connect failed|cannot find the computer|Name or service not known|No such host/i.test(text)) {
+    return "WinRM: хост недоступен или не резолвится в DNS";
+  }
+  if (/Access is denied|AccessDenied|unauthorized|Logon failure/i.test(text)) {
+    return "WinRM: неверный логин/пароль или нет прав администратора на ПК";
+  }
+  if (/timed out|timeout|Unable to connect|connection refused/i.test(text)) {
+    return "WinRM недоступен (порт 5985 / firewall / Enable-PSRemoting)";
+  }
+  if (/Deploy package missing|pnpm pack:kiosk-deploy/i.test(text)) {
+    return "Нет пакета установки — выполните pnpm pack:kiosk-deploy на сервере";
+  }
+  if (/START_ERR:\s*(.+)/i.test(text)) {
+    const m = /START_ERR:\s*(.+)/i.exec(text);
+    const inner = m?.[1]?.trim();
+    if (inner) return friendlyDeployMessage(inner) || inner.slice(0, 280);
+  }
+  return null;
+}
+
 export function summarizeDeployOutput(text: string, code: number, extraSkip?: RegExp) {
-  const lines = text
+  const cleaned = stripAnsi(text);
+  const friendly = friendlyDeployMessage(cleaned);
+  if (friendly) return friendly;
+
+  const lines = cleaned
     .replace(/\r/g, "")
     .split("\n")
     .map((l) => l.trim())
@@ -167,11 +209,20 @@ export function summarizeDeployOutput(text: string, code: number, extraSkip?: Re
         !l.startsWith("At ") &&
         !l.startsWith("+ ") &&
         !/^STAGE:/i.test(l) &&
+        !/^Connecting via/i.test(l) &&
+        !/^Starting agent/i.test(l) &&
         !l.includes("CategoryInfo") &&
         !l.includes("FullyQualifiedErrorId") &&
+        !l.includes("ScriptStackTrace") &&
+        !l.includes("Exception:") &&
         !(extraSkip && extraSkip.test(l))
     );
-  return (lines.slice(-6).join(" | ") || text.slice(-500) || `exit ${code}`).slice(0, 700);
+  const picked =
+    lines.find((l) => /^START_ERR:/i.test(l) || /^INSTALL_ERR:/i.test(l)) ||
+    lines.slice(-4).join(" · ") ||
+    cleaned.slice(-400) ||
+    `exit ${code}`;
+  return stripAnsi(picked).replace(/^START_ERR:\s*/i, "").replace(/^INSTALL_ERR:\s*/i, "").slice(0, 700);
 }
 
 function scriptPath(name: DeployScriptName, transport: DeployTransportKind): string {

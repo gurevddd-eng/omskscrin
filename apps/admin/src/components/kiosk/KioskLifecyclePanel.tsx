@@ -1,5 +1,7 @@
-import type { InstallStage, KioskDto } from "@stella/shared";
+import type { GameCopyStatus, InstallStage, KioskDto } from "@stella/shared";
 import {
+  GAME_COPY_STATUS_LABEL,
+  GAME_COPY_STATUS_STEPS,
   INSTALL_STAGE_LABEL,
   INSTALL_STAGE_STEPS,
   POLICY_CLEAR_STAGE_LABEL,
@@ -127,6 +129,68 @@ function buildSimpleLane(
     steps,
     active,
     message,
+  };
+}
+
+function formatBytes(n: number | null | undefined): string {
+  if (n == null || !Number.isFinite(n) || n <= 0) return "";
+  if (n < 1024) return `${n} Б`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} КБ`;
+  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} МБ`;
+  return `${(n / (1024 * 1024 * 1024)).toFixed(2)} ГБ`;
+}
+
+function buildGameLane(k: KioskDto): Lane | null {
+  const gc = k.gameCopy;
+  const installed = Array.isArray(k.installedGames) ? k.installedGames : [];
+  if (!gc && installed.length === 0) return null;
+
+  const status = (gc?.status || "idle") as GameCopyStatus;
+  const busy = status === "copying" || status === "launching" || status === "running";
+  const failed = status === "error";
+  const onDisk = status === "idle" && Boolean(gc?.folder || installed.length);
+
+  if (!busy && !failed && !onDisk && installed.length === 0) return null;
+
+  const active = stageIndex(GAME_COPY_STATUS_STEPS, status);
+  const sizeHint = formatBytes(gc?.copiedBytes);
+  const parts = [
+    gc?.folder || null,
+    sizeHint || null,
+    gc?.message || null,
+  ].filter(Boolean);
+
+  let title = "Игра";
+  let subtitle = GAME_COPY_STATUS_LABEL[status] || status;
+  let tone: LaneTone = "idle";
+
+  if (failed) {
+    title = "Игра · ошибка";
+    subtitle = gc?.folder ? String(gc.folder) : "Сбой";
+    tone = "error";
+  } else if (busy) {
+    title = "Игра";
+    subtitle = GAME_COPY_STATUS_LABEL[status];
+    tone = "run";
+  } else {
+    title = "Игра на киоске";
+    subtitle =
+      installed.length > 0
+        ? `${installed.length} на диске`
+        : gc?.folder
+          ? String(gc.folder)
+          : "Установлена";
+    tone = "done";
+  }
+
+  return {
+    id: "game",
+    title,
+    subtitle,
+    tone,
+    steps: GAME_COPY_STATUS_STEPS,
+    active: busy || failed ? active : undefined,
+    message: parts.length ? parts.join(" · ") : null,
   };
 }
 
@@ -279,6 +343,9 @@ export function KioskLifecyclePanel({ kiosk, deployTarget, updating }: Props) {
   );
   if (policy) lanes.push(policy);
 
+  const game = buildGameLane(k);
+  if (game) lanes.push(game);
+
   // Always show OTA lane so the block stays informative
   lanes.push(buildOtaLane(otaState, local, target));
 
@@ -326,6 +393,29 @@ export function KioskLifecyclePanel({ kiosk, deployTarget, updating }: Props) {
           <ProcessLane key={lane.id} lane={lane} />
         ))}
       </div>
+
+      {Array.isArray(k.installedGames) && k.installedGames.length > 0 ? (
+        <div className="kx-life__games">
+          <h4 className="kx-life__status-title">Установленные игры</h4>
+          <ul className="kx-life__games-list">
+            {k.installedGames.map((name) => (
+              <li key={name} className="kx-life__games-item">
+                <span className="kx-life__games-name">{name}</span>
+                {k.gameCopy?.folder === name && k.gameCopy.status === "running" ? (
+                  <span className="kx-life__games-tag is-run">запущена</span>
+                ) : k.gameCopy?.folder === name &&
+                  (k.gameCopy.status === "copying" || k.gameCopy.status === "launching") ? (
+                  <span className="kx-life__games-tag is-run">
+                    {GAME_COPY_STATUS_LABEL[k.gameCopy.status]}
+                  </span>
+                ) : (
+                  <span className="kx-life__games-tag">на диске</span>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
 
       <div className="kx-life__status">
         <h4 className="kx-life__status-title">Связь и контент</h4>

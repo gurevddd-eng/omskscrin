@@ -6,7 +6,7 @@ import path from "node:path";
 import { prisma } from "./prisma.js";
 import { config } from "./config.js";
 import { getEffectiveDeploy } from "./deployCredentials.js";
-import { mapKiosk } from "./kioskProbe.js";
+import { mapKiosk, probeKioskById } from "./kioskProbe.js";
 import { broadcastKioskUpsert } from "./monitorHub.js";
 import { getSiteNetworkSettings, resolveKioskNetwork } from "./networkSettings.js";
 import {
@@ -24,6 +24,7 @@ type InstallJob = {
 
 const jobs = new Map<string, InstallJob>();
 const cancelRequested = new Set<string>();
+const clearTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 export function deployPackageReady() {
   return (
@@ -34,6 +35,24 @@ export function deployPackageReady() {
 
 function isStage(s: string): s is InstallStage {
   return s in INSTALL_STAGE_LABEL;
+}
+
+function scheduleInstallIdle(id: string, delayMs: number) {
+  const prev = clearTimers.get(id);
+  if (prev) clearTimeout(prev);
+  const t = setTimeout(() => {
+    clearTimers.delete(id);
+    void (async () => {
+      try {
+        const row = await prisma.kiosk.findUnique({ where: { id }, select: { installStatus: true } });
+        if (!row || (row.installStatus !== "ok" && row.installStatus !== "error")) return;
+        await setInstall(id, "idle", "idle", null);
+      } catch {
+        /* ignore */
+      }
+    })();
+  }, delayMs);
+  clearTimers.set(id, t);
 }
 
 async function setInstall(
@@ -113,7 +132,12 @@ export async function startKioskInstall(id: string) {
     return setInstall(id, "error", "error", transportErr);
   }
   if (!deployPackageReady()) {
-    return setInstall(id, "error", "error", "Deploy package missing. Run: pnpm pack:kiosk-deploy");
+    return setInstall(
+      id,
+      "error",
+      "error",
+      "Нет пакета установки — выполните pnpm pack:kiosk-deploy на сервере"
+    );
   }
   if (jobs.has(id)) {
     const k = await prisma.kiosk.findUnique({
@@ -218,19 +242,35 @@ export async function startKioskInstall(id: string) {
 
     const text = `${result.stdout}\n${result.stderr}`.trim();
     if (/INSTALL_OK/i.test(text) || /OK installed/i.test(text)) {
-      return setInstall(id, "ok", "done", INSTALL_STAGE_LABEL.done);
+      const dto = await setInstall(id, "ok", "done", INSTALL_STAGE_LABEL.done);
+      try {
+        await probeKioskById(id);
+      } catch {
+        /* install succeeded even if probe races */
+      }
+      scheduleInstallIdle(id, 12_000);
+      return dto;
     }
-    return setInstall(
+    const errDto = await setInstall(
       id,
       "error",
       "error",
-      summarizeDeployOutput(text, result.code) || `Failed at ${lastStage}`
+      summarizeDeployOutput(text, result.code) || `Ошибка на этапе «${lastStage}»`
     );
+    scheduleInstallIdle(id, 45_000);
+    return errDto;
   } catch (e) {
     if (job.cancelled) {
       return setInstall(id, "idle", "idle", "Установка отменена");
     }
-    return setInstall(id, "error", "error", e instanceof Error ? e.message : "Install failed to start");
+    const errDto = await setInstall(
+      id,
+      "error",
+      "error",
+      e instanceof Error ? e.message : "Install failed to start"
+    );
+    scheduleInstallIdle(id, 45_000);
+    return errDto;
   } finally {
     jobs.delete(id);
     cancelRequested.delete(id);
