@@ -23,6 +23,12 @@ export type DeployStatusDetail = {
   packageDir: string;
   serverPublicUrl: string | null;
   softwareVersion: string | null;
+  appVersion: string;
+  builtAt: string | null;
+  hasPackageZip: boolean;
+  hasUpdateZip: boolean;
+  packageZipSize: string | null;
+  updateZipSize: string | null;
   deployCredentialsConfigured: boolean;
   deployTransport: string;
   deployRuntimeMessage: string;
@@ -158,6 +164,12 @@ export function getDeployStatusDetail(): DeployStatusDetail {
     packageDir: process.env.DEPLOY_PACKAGE_DIR || "data/deploy/current",
     serverPublicUrl: config.serverPublicUrl || null,
     softwareVersion: meta.softwareVersion !== "0" ? meta.softwareVersion : null,
+    appVersion: meta.appVersion,
+    builtAt: meta.builtAt,
+    hasPackageZip: Boolean(meta.packageZipPath),
+    hasUpdateZip: Boolean(meta.updateZipPath),
+    packageZipSize: existsSync(packageZip) ? fileSizeMb(packageZip) ?? null : null,
+    updateZipSize: existsSync(updateZip) ? fileSizeMb(updateZip) ?? null : null,
     deployCredentialsConfigured: credsOk,
     deployTransport: runtime.transport,
     deployRuntimeMessage: runtime.message,

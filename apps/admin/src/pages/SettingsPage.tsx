@@ -258,236 +258,273 @@ export function SettingsPage() {
           {savedHint ? <Alert tone="success">{savedHint}</Alert> : null}
           {networkHint ? <Alert tone="success">{networkHint}</Alert> : null}
           {deployHint ? <Alert tone="success">{deployHint}</Alert> : null}
+          {gameShareHint ? <Alert tone="success">{gameShareHint}</Alert> : null}
         </>
       }
     >
-      <div className="cx-tabs" role="tablist">
+      <div className="admin-toolbar">
+        <ul className="admin-toolbar__stats">
+          <li>
+            <strong className="admin-toolbar__ver">{settingsVersion}</strong>
+            <span>версия</span>
+          </li>
+          <li>
+            <strong className={softwareEnabled ? "is-ok" : "is-warn"}>
+              {softwareEnabled ? "вкл" : "выкл"}
+            </strong>
+            <span>софт</span>
+          </li>
+          <li>
+            <strong>
+              {themeMode === "manual"
+                ? "ручная"
+                : themeMode === "schedule"
+                  ? "расписание"
+                  : themeMode === "dark"
+                    ? "тёмная"
+                    : "светлая"}
+            </strong>
+            <span>тема</span>
+          </li>
+          {isAdmin ? (
+            <li>
+              <strong className={credentialsOk ? "is-ok" : "is-warn"}>
+                {credentialsOk ? "готово" : "нужен пароль"}
+              </strong>
+              <span>WinRM</span>
+            </li>
+          ) : null}
+        </ul>
+      </div>
+
+      <div className="settings-tabs" role="tablist" aria-label="Разделы настроек">
         <button
           type="button"
           role="tab"
-          className={`cx-tab${tab === "behavior" ? " is-active" : ""}`}
+          aria-selected={tab === "behavior"}
+          className={`settings-tabs__btn${tab === "behavior" ? " is-active" : ""}`}
           onClick={() => setTab("behavior")}
         >
-          Поведение киосков
+          <span className="settings-tabs__title">Поведение</span>
+          <span className="settings-tabs__desc">Софт, lockdown, тема, игры</span>
         </button>
         <button
           type="button"
           role="tab"
-          className={`cx-tab${tab === "network" ? " is-active" : ""}`}
+          aria-selected={tab === "network"}
+          className={`settings-tabs__btn${tab === "network" ? " is-active" : ""}`}
           onClick={() => setTab("network")}
         >
-          Сеть и порты
+          <span className="settings-tabs__title">Сеть и порты</span>
+          <span className="settings-tabs__desc">URL сервера, health, CORS</span>
         </button>
         {isAdmin ? (
           <button
             type="button"
             role="tab"
-            className={`cx-tab${tab === "windows" ? " is-active" : ""}`}
+            aria-selected={tab === "windows"}
+            className={`settings-tabs__btn${tab === "windows" ? " is-active" : ""}`}
             onClick={() => setTab("windows")}
           >
-            Windows / домен
+            <span className="settings-tabs__title">Windows / домен</span>
+            <span className="settings-tabs__desc">Учётка WinRM для киосков</span>
           </button>
         ) : null}
       </div>
 
       {tab === "behavior" ? (
-        <Card
-          title="Поведение"
-          subtitle={`Версия настроек: ${settingsVersion}`}
-          actions={
-            canEdit ? (
-              <button type="submit" form="settings-behavior" className="btn" disabled={busy || !dirty}>
-                {busy ? "Сохранение…" : "Сохранить"}
-              </button>
-            ) : null
-          }
-        >
-          <form id="settings-behavior" onSubmit={onSave}>
-            <div className="cx-setting">
-              <div>
-                <p className="cx-setting__title">Софт киосков</p>
-                <p className="cx-setting__hint">
-                  Глобально включает или выключает агент и Edge на всех ПК. При выключении софт не
-                  поднимется после перезагрузки, пока не включите снова.
-                </p>
-              </div>
-              <label className={`settings-switch ${!canEdit ? "is-disabled" : ""}`}>
-                <input
-                  type="checkbox"
-                  checked={softwareEnabled}
-                  disabled={!canEdit || busy}
-                  onChange={(e) => {
-                    setSoftwareEnabled(e.target.checked);
-                    setDirty(true);
-                    setSavedHint("");
-                  }}
-                />
-                <span className="settings-switch__ui" aria-hidden />
-                <span className="settings-switch__label">{softwareEnabled ? "Вкл" : "Выкл"}</span>
-              </label>
-            </div>
-
-            <div className="cx-setting">
-              <div>
-                <p className="cx-setting__title">Блокировка клавиатуры</p>
-                <p className="cx-setting__hint">
-                  Lockdown Windows: hotkeys, политики меню, Keyboard Filter (Ctrl+Alt+Del на
-                  поддерживаемых редакциях). Снять вручную — кнопка на карточке киоска.
-                </p>
-              </div>
-              <label className={`settings-switch ${!canEdit ? "is-disabled" : ""}`}>
-                <input
-                  type="checkbox"
-                  checked={blockKeyboard}
-                  disabled={!canEdit || busy}
-                  onChange={(e) => {
-                    setBlockKeyboard(e.target.checked);
-                    setDirty(true);
-                    setSavedHint("");
-                  }}
-                />
-                <span className="settings-switch__ui" aria-hidden />
-                <span className="settings-switch__label">{blockKeyboard ? "Вкл" : "Выкл"}</span>
-              </label>
-            </div>
-
-            <div className="cx-setting cx-setting--stack">
-              <div>
-                <p className="cx-setting__title">Тема на киосках</p>
-                <p className="cx-setting__hint">
-                  Расписание по времени сервера (сейчас:{" "}
-                  {themeMode === "manual"
-                    ? "на киоске вручную"
-                    : themeNow === "dark"
-                      ? "тёмная"
-                      : themeNow === "light"
-                        ? "светлая"
-                        : "—"}
-                  ). При режиме «По расписанию» переключатель на киоске скрыт.
-                </p>
-              </div>
-              <div className="settings-theme">
-                <label>
-                  Режим
-                  <select
-                    value={themeMode}
+        <div className="settings-panels">
+          <Card
+            title="Поведение киосков"
+            subtitle="Глобальные флаги для всех ПК"
+            actions={
+              canEdit ? (
+                <button type="submit" form="settings-behavior" className="btn" disabled={busy || !dirty}>
+                  {busy ? "Сохранение…" : dirty ? "Сохранить" : "Сохранено"}
+                </button>
+              ) : null
+            }
+          >
+            <form id="settings-behavior" onSubmit={onSave}>
+              <div className="cx-setting">
+                <div>
+                  <p className="cx-setting__title">Софт киосков</p>
+                  <p className="cx-setting__hint">
+                    Глобально включает или выключает агент и Edge на всех ПК. При выключении софт не
+                    поднимется после перезагрузки, пока не включите снова.
+                  </p>
+                </div>
+                <label className={`settings-switch ${!canEdit ? "is-disabled" : ""}`}>
+                  <input
+                    type="checkbox"
+                    checked={softwareEnabled}
                     disabled={!canEdit || busy}
                     onChange={(e) => {
-                      setThemeMode(e.target.value as typeof themeMode);
-                      setDirty(true);
-                      setSavedHint("");
-                    }}
-                  >
-                    <option value="manual">Вручную на киоске</option>
-                    <option value="light">Всегда светлая</option>
-                    <option value="dark">Всегда тёмная</option>
-                    <option value="schedule">По расписанию</option>
-                  </select>
-                </label>
-                <label>
-                  Тёмная с
-                  <input
-                    type="time"
-                    value={themeDarkFrom}
-                    disabled={!canEdit || busy || themeMode !== "schedule"}
-                    onChange={(e) => {
-                      setThemeDarkFrom(e.target.value || "20:00");
+                      setSoftwareEnabled(e.target.checked);
                       setDirty(true);
                       setSavedHint("");
                     }}
                   />
-                </label>
-                <label>
-                  до
-                  <input
-                    type="time"
-                    value={themeDarkTo}
-                    disabled={!canEdit || busy || themeMode !== "schedule"}
-                    onChange={(e) => {
-                      setThemeDarkTo(e.target.value || "08:00");
-                      setDirty(true);
-                      setSavedHint("");
-                    }}
-                  />
+                  <span className="settings-switch__ui" aria-hidden />
+                  <span className="settings-switch__label">{softwareEnabled ? "Вкл" : "Выкл"}</span>
                 </label>
               </div>
-            </div>
-          </form>
-        </Card>
-      ) : null}
 
-      {tab === "behavior" ? (
-        <Card
-          title="Шара с играми"
-          subtitle="UNC-корень, откуда киоски копируют игры для экспонатов"
-          actions={
-            canEdit ? (
-              <button
-                type="submit"
-                form="settings-game-share"
-                className="btn"
-                disabled={gameShareBusy || !gameShareDirty}
-              >
-                {gameShareBusy ? "Сохранение…" : "Сохранить UNC"}
-              </button>
-            ) : null
-          }
-        >
-          <form id="settings-game-share" onSubmit={onSaveGameShare}>
-            <label>
-              UNC шары
-              <input
-                value={gameShareUnc}
-                disabled={!canEdit || gameShareBusy}
-                onChange={(e) => {
-                  setGameShareUnc(e.target.value);
-                  setGameShareDirty(true);
-                  setGameShareHint("");
-                }}
-                placeholder="\\HYDRALISK3\Patriot\Игры парк победы"
-                spellCheck={false}
-              />
-            </label>
-            <p className="field-hint">
-              Укажите корень шары (без имени конкретной игры). В карточке экспоната выбирается папка
-              внутри, например <code>PatriotGame 1stela</code>.
-            </p>
-            {gameShareHint ? <Alert tone="success">{gameShareHint}</Alert> : null}
-          </form>
-        </Card>
+              <div className="cx-setting">
+                <div>
+                  <p className="cx-setting__title">Блокировка клавиатуры</p>
+                  <p className="cx-setting__hint">
+                    Lockdown Windows: hotkeys, политики меню, Keyboard Filter (Ctrl+Alt+Del на
+                    поддерживаемых редакциях). Снять вручную — кнопка на карточке киоска.
+                  </p>
+                </div>
+                <label className={`settings-switch ${!canEdit ? "is-disabled" : ""}`}>
+                  <input
+                    type="checkbox"
+                    checked={blockKeyboard}
+                    disabled={!canEdit || busy}
+                    onChange={(e) => {
+                      setBlockKeyboard(e.target.checked);
+                      setDirty(true);
+                      setSavedHint("");
+                    }}
+                  />
+                  <span className="settings-switch__ui" aria-hidden />
+                  <span className="settings-switch__label">{blockKeyboard ? "Вкл" : "Выкл"}</span>
+                </label>
+              </div>
+
+              <div className="cx-setting cx-setting--stack">
+                <div>
+                  <p className="cx-setting__title">Тема на киосках</p>
+                  <p className="cx-setting__hint">
+                    Расписание по времени сервера
+                    {themeMode === "manual"
+                      ? " · на киоске вручную"
+                      : themeNow
+                        ? ` · сейчас ${themeNow === "dark" ? "тёмная" : "светлая"}`
+                        : ""}
+                    . При режиме «По расписанию» переключатель на киоске скрыт.
+                  </p>
+                </div>
+                <div className="settings-theme">
+                  <label>
+                    Режим
+                    <select
+                      value={themeMode}
+                      disabled={!canEdit || busy}
+                      onChange={(e) => {
+                        setThemeMode(e.target.value as typeof themeMode);
+                        setDirty(true);
+                        setSavedHint("");
+                      }}
+                    >
+                      <option value="manual">Вручную на киоске</option>
+                      <option value="light">Всегда светлая</option>
+                      <option value="dark">Всегда тёмная</option>
+                      <option value="schedule">По расписанию</option>
+                    </select>
+                  </label>
+                  <label>
+                    Тёмная с
+                    <input
+                      type="time"
+                      value={themeDarkFrom}
+                      disabled={!canEdit || busy || themeMode !== "schedule"}
+                      onChange={(e) => {
+                        setThemeDarkFrom(e.target.value || "20:00");
+                        setDirty(true);
+                        setSavedHint("");
+                      }}
+                    />
+                  </label>
+                  <label>
+                    до
+                    <input
+                      type="time"
+                      value={themeDarkTo}
+                      disabled={!canEdit || busy || themeMode !== "schedule"}
+                      onChange={(e) => {
+                        setThemeDarkTo(e.target.value || "08:00");
+                        setDirty(true);
+                        setSavedHint("");
+                      }}
+                    />
+                  </label>
+                </div>
+              </div>
+            </form>
+          </Card>
+
+          <Card
+            title="Шара с играми"
+            subtitle="UNC-корень, откуда киоски копируют игры для экспонатов"
+            actions={
+              canEdit ? (
+                <button
+                  type="submit"
+                  form="settings-game-share"
+                  className="btn"
+                  disabled={gameShareBusy || !gameShareDirty}
+                >
+                  {gameShareBusy ? "Сохранение…" : gameShareDirty ? "Сохранить UNC" : "Сохранено"}
+                </button>
+              ) : null
+            }
+          >
+            <form id="settings-game-share" onSubmit={onSaveGameShare}>
+              <label>
+                UNC шары
+                <input
+                  value={gameShareUnc}
+                  disabled={!canEdit || gameShareBusy}
+                  onChange={(e) => {
+                    setGameShareUnc(e.target.value);
+                    setGameShareDirty(true);
+                    setGameShareHint("");
+                  }}
+                  placeholder="\\HYDRALISK3\Patriot\Игры парк победы"
+                  spellCheck={false}
+                />
+              </label>
+              <p className="field-hint">
+                Укажите корень шары (без имени конкретной игры). В карточке экспоната выбирается папка
+                внутри, например <code>PatriotGame 1stela</code>.
+              </p>
+            </form>
+          </Card>
+        </div>
       ) : null}
 
       {tab === "network" ? (
-        <>
+        <div className="settings-panels">
           {systemNetwork ? (
-            <Card title="Runtime сервера" subtitle="Значения из .env и текущего процесса">
-              <dl className="network-dl">
-                <div>
-                  <dt>Слушает</dt>
-                  <dd>
-                    {systemNetwork.runtime.host}:{systemNetwork.runtime.port} →{" "}
-                    <code>{systemNetwork.runtime.bindUrl}</code>
-                  </dd>
-                </div>
-                <div>
-                  <dt>SSE мониторинг</dt>
-                  <dd>
-                    <code>{systemNetwork.runtime.monitorStreamPath}</code>
-                  </dd>
-                </div>
-                <div>
-                  <dt>URL для kiosk.json</dt>
-                  <dd>
-                    <code>{effectiveServerUrl || systemNetwork.runtime.effectiveServerPublicUrl}</code>
-                  </dd>
-                </div>
-                <div>
-                  <dt>WinRM на киосках</dt>
-                  <dd>{systemNetwork.endpoints.winRm}</dd>
-                </div>
-              </dl>
-              <p className="cx-setting__hint">{systemNetwork.note}</p>
-            </Card>
+            <div className="settings-runtime">
+              <article className="settings-runtime__card">
+                <p className="settings-runtime__label">Слушает</p>
+                <p className="settings-runtime__value">
+                  {systemNetwork.runtime.host}:{systemNetwork.runtime.port}
+                </p>
+                <code className="settings-runtime__code">{systemNetwork.runtime.bindUrl}</code>
+              </article>
+              <article className="settings-runtime__card">
+                <p className="settings-runtime__label">URL для kiosk.json</p>
+                <p className="settings-runtime__value settings-runtime__value--sm">
+                  {effectiveServerUrl || systemNetwork.runtime.effectiveServerPublicUrl}
+                </p>
+              </article>
+              <article className="settings-runtime__card">
+                <p className="settings-runtime__label">SSE мониторинг</p>
+                <code className="settings-runtime__code">{systemNetwork.runtime.monitorStreamPath}</code>
+              </article>
+              <article className="settings-runtime__card">
+                <p className="settings-runtime__label">WinRM на киосках</p>
+                <p className="settings-runtime__value settings-runtime__value--sm">
+                  {systemNetwork.endpoints.winRm}
+                </p>
+              </article>
+              <p className="settings-runtime__note">{systemNetwork.note}</p>
+            </div>
           ) : null}
 
           <Card
@@ -495,8 +532,13 @@ export function SettingsPage() {
             subtitle="Применяются к новым установкам и push-config"
             actions={
               canEdit ? (
-                <button type="submit" form="settings-network" className="btn" disabled={networkBusy || !networkDirty}>
-                  {networkBusy ? "Сохранение…" : "Сохранить сеть"}
+                <button
+                  type="submit"
+                  form="settings-network"
+                  className="btn"
+                  disabled={networkBusy || !networkDirty}
+                >
+                  {networkBusy ? "Сохранение…" : networkDirty ? "Сохранить сеть" : "Сохранено"}
                 </button>
               ) : null
             }
@@ -593,99 +635,115 @@ export function SettingsPage() {
               </div>
             </form>
           </Card>
-        </>
+        </div>
       ) : null}
 
       {tab === "windows" && isAdmin ? (
-        <Card
-          title="Доменная учётка"
-          subtitle={
-            credentialsOk
-              ? `Готово · источник: ${deploySource}`
-              : "Нужна для установки и управления киосками с Debian"
-          }
-          actions={
-            <button type="submit" form="settings-deploy" className="btn" disabled={deployBusy || !deployDirty}>
-              {deployBusy ? "Сохранение…" : "Сохранить"}
-            </button>
-          }
-        >
-          <form id="settings-deploy" className="stack" onSubmit={onSaveDeploy}>
-            <p className="cx-setting__hint">
-              Сервер на Debian подключается к Windows по <strong>WinRM</strong> (TCP 5985) через{" "}
-              <code>pwsh</code> и модуль PSWSMan. OpenSSH на киосках не нужен. Учётка должна быть
-              локальным администратором на целевых ПК (или в группе Domain Admins / делегированных
-              прав).
-            </p>
+        <div className="settings-panels">
+          <Card
+            title="Доменная учётка"
+            subtitle={
+              credentialsOk
+                ? `Готово · источник: ${deploySource}`
+                : "Нужна для установки и управления киосками с Debian"
+            }
+            actions={
+              <button
+                type="submit"
+                form="settings-deploy"
+                className="btn"
+                disabled={deployBusy || !deployDirty}
+              >
+                {deployBusy ? "Сохранение…" : deployDirty ? "Сохранить" : "Сохранено"}
+              </button>
+            }
+          >
+            <form id="settings-deploy" className="stack" onSubmit={onSaveDeploy}>
+              <div className={`settings-cred-banner${credentialsOk ? " is-ok" : " is-warn"}`}>
+                <strong>{credentialsOk ? "Учётка готова" : "Учётка неполная"}</strong>
+                <span>
+                  {credentialsOk
+                    ? "Debian подключается к ПК по WinRM (порт 5985)."
+                    : "Укажите логин и пароль доменной учётки с правами администратора на киосках."}
+                </span>
+              </div>
 
-            <label>
-              Логин (предпочтительно UPN)
-              <input
-                value={deployUser}
-                placeholder="user@udhb.local"
-                autoComplete="off"
-                disabled={deployBusy}
-                onChange={(e) => {
-                  setDeployUser(e.target.value);
-                  setDeployDirty(true);
-                  setDeployHint("");
-                }}
-              />
-            </label>
+              <p className="cx-setting__hint">
+                Сервер на Debian подключается к Windows по <strong>WinRM</strong> через{" "}
+                <code>pwsh</code> и модуль PSWSMan. OpenSSH на киосках не нужен.
+              </p>
 
-            <label>
-              Пароль
-              <input
-                type="password"
-                value={deployPassword}
-                placeholder={deployPasswordSet ? "•••••••• (оставьте пустым, чтобы не менять)" : "пароль доменной учётки"}
-                autoComplete="new-password"
-                disabled={deployBusy}
-                onChange={(e) => {
-                  setDeployPassword(e.target.value);
-                  setDeployDirty(true);
-                  setDeployHint("");
-                }}
-              />
-            </label>
-
-            <div className="cx-field-grid">
               <label>
-                DNS-суффикс домена
+                Логин (предпочтительно UPN)
                 <input
-                  value={domainSuffix}
-                  placeholder="udhb.local"
+                  value={deployUser}
+                  placeholder="user@udhb.local"
+                  autoComplete="off"
                   disabled={deployBusy}
                   onChange={(e) => {
-                    setDomainSuffix(e.target.value);
+                    setDeployUser(e.target.value);
                     setDeployDirty(true);
+                    setDeployHint("");
                   }}
                 />
               </label>
+
               <label>
-                Транспорт
-                <select
-                  value={deployTransport}
+                Пароль
+                <input
+                  type="password"
+                  value={deployPassword}
+                  placeholder={
+                    deployPasswordSet ? "•••••••• (оставьте пустым, чтобы не менять)" : "пароль доменной учётки"
+                  }
+                  autoComplete="new-password"
                   disabled={deployBusy}
                   onChange={(e) => {
-                    setDeployTransport(e.target.value as "auto" | "ssh" | "winrm");
+                    setDeployPassword(e.target.value);
                     setDeployDirty(true);
+                    setDeployHint("");
                   }}
-                >
-                  <option value="winrm">WinRM (рекомендуется)</option>
-                  <option value="auto">Авто</option>
-                  <option value="ssh">SSH (только если на ПК есть OpenSSH)</option>
-                </select>
+                />
               </label>
-            </div>
 
-            <p className="cx-setting__hint">
-              Короткое имя <code>itpc07</code> при добавлении киоска станет{" "}
-              <code>itpc07.{domainSuffix || "udhb.local"}</code>. На Debian должны быть установлены
-              PowerShell 7 и PSWSMan.
-            </p>
-          </form>
-        </Card>
+              <div className="cx-field-grid">
+                <label>
+                  DNS-суффикс домена
+                  <input
+                    value={domainSuffix}
+                    placeholder="udhb.local"
+                    disabled={deployBusy}
+                    onChange={(e) => {
+                      setDomainSuffix(e.target.value);
+                      setDeployDirty(true);
+                    }}
+                  />
+                </label>
+                <label>
+                  Транспорт
+                  <select
+                    value={deployTransport}
+                    disabled={deployBusy}
+                    onChange={(e) => {
+                      setDeployTransport(e.target.value as "auto" | "ssh" | "winrm");
+                      setDeployDirty(true);
+                    }}
+                  >
+                    <option value="winrm">WinRM (рекомендуется)</option>
+                    <option value="auto">Авто</option>
+                    <option value="ssh">SSH (только если на ПК есть OpenSSH)</option>
+                  </select>
+                </label>
+              </div>
+
+              <p className="cx-setting__hint">
+                Короткое имя <code>itpc07</code> при добавлении киоска станет{" "}
+                <code>itpc07.{domainSuffix || "udhb.local"}</code>. На Debian должны быть установлены
+                PowerShell 7 и PSWSMan.
+              </p>
+            </form>
+          </Card>
+        </div>
       ) : null}
     </PageShell>
   );

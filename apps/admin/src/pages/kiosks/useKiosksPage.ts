@@ -171,6 +171,22 @@ export function useKiosksPage() {
     return { online, healthy, installingCount, problems, total: kiosks.length };
   }, [kiosks]);
 
+  const deployFleet = useMemo(() => {
+    const target = deploy?.softwareVersion || null;
+    const otaOutdated = kiosks.filter((k) => {
+      const local = k.softwareVersion;
+      const tgt = k.otaTarget || target;
+      return Boolean(tgt && local && local !== tgt);
+    }).length;
+    const otaPending = kiosks.filter((k) => k.otaPending || otaWaiting[k.id]).length;
+    return {
+      total: kiosks.length,
+      online: kiosks.filter((k) => k.online).length,
+      otaOutdated,
+      otaPending,
+    };
+  }, [kiosks, deploy?.softwareVersion, otaWaiting]);
+
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return kiosks
@@ -943,6 +959,7 @@ export function useKiosksPage() {
     kiosks,
     exhibits,
     deploy,
+    deployFleet,
     selected,
     selectedId,
     selectedHiddenByFilter,

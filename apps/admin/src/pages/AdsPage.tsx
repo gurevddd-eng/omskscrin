@@ -4,7 +4,6 @@ import { useAuth } from "../auth";
 import { api, uploadFile } from "../api";
 import { PageShell } from "../components/ui/PageShell";
 import { Alert } from "../components/ui/Alert";
-import { Card } from "../components/ui/Card";
 
 type MediaRef = { id: string; url: string; filename?: string };
 
@@ -14,6 +13,7 @@ export function AdsPage() {
   const [previews, setPreviews] = useState<MediaRef[]>([]);
   const [adsVersion, setAdsVersion] = useState("—");
   const [error, setError] = useState("");
+  const [savedHint, setSavedHint] = useState("");
   const [busy, setBusy] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [dirty, setDirty] = useState(false);
@@ -30,18 +30,21 @@ export function AdsPage() {
     load().catch((e) => setError(e.message));
   }, []);
 
-  async function onUpload(file: File | undefined) {
-    if (!file || !canEdit) return;
+  async function onUpload(files: FileList | null) {
+    if (!files?.length || !canEdit) return;
     setUploading(true);
     setError("");
     try {
-      const uploaded = await uploadFile(file);
-      setAdIds((ids) => [...ids, uploaded.id]);
-      setPreviews((list) => [
-        ...list,
-        { id: uploaded.id, url: uploaded.url, filename: uploaded.filename },
-      ]);
+      for (const file of Array.from(files)) {
+        const uploaded = await uploadFile(file);
+        setAdIds((ids) => [...ids, uploaded.id]);
+        setPreviews((list) => [
+          ...list,
+          { id: uploaded.id, url: uploaded.url, filename: uploaded.filename },
+        ]);
+      }
       setDirty(true);
+      setSavedHint("");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Ошибка загрузки");
     } finally {
@@ -53,19 +56,47 @@ export function AdsPage() {
     setAdIds((ids) => ids.filter((x) => x !== id));
     setPreviews((list) => list.filter((x) => x.id !== id));
     setDirty(true);
+    setSavedHint("");
   }
 
-  async function onSave(e: FormEvent) {
-    e.preventDefault();
+  function moveItem(id: string, dir: -1 | 1) {
+    setAdIds((ids) => {
+      const i = ids.indexOf(id);
+      const j = i + dir;
+      if (i < 0 || j < 0 || j >= ids.length) return ids;
+      const next = [...ids];
+      const tmp = next[i]!;
+      next[i] = next[j]!;
+      next[j] = tmp;
+      return next;
+    });
+    setPreviews((list) => {
+      const i = list.findIndex((x) => x.id === id);
+      const j = i + dir;
+      if (i < 0 || j < 0 || j >= list.length) return list;
+      const next = [...list];
+      const tmp = next[i]!;
+      next[i] = next[j]!;
+      next[j] = tmp;
+      return next;
+    });
+    setDirty(true);
+    setSavedHint("");
+  }
+
+  async function onSave(e?: FormEvent) {
+    e?.preventDefault();
     if (!canEdit) return;
     setBusy(true);
     setError("");
+    setSavedHint("");
     try {
       const saved = await api<AdsDto>("/api/ads", { method: "PUT", json: { adIds } });
       setAdIds(saved.adIds);
       setPreviews(saved.ads);
       setAdsVersion(saved.adsVersion);
       setDirty(false);
+      setSavedHint("Реклама сохранена — киоски подхватят при синхронизации");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Ошибка сохранения");
     } finally {
@@ -78,56 +109,118 @@ export function AdsPage() {
       section="Контент"
       title="Реклама"
       description="Вертикальные баннеры в правой колонке на всех киосках. Несколько файлов сменяются по кругу."
-      banner={error ? <Alert tone="error">{error}</Alert> : null}
+      banner={
+        <>
+          {error ? <Alert tone="error">{error}</Alert> : null}
+          {savedHint ? <Alert tone="success">{savedHint}</Alert> : null}
+        </>
+      }
+      actions={
+        canEdit ? (
+          <>
+            <label className="file-btn">
+              {uploading ? "Загрузка…" : "Добавить баннеры"}
+              <input
+                type="file"
+                accept="image/*"
+                multiple
+                hidden
+                disabled={busy || uploading}
+                onChange={(ev) => {
+                  void onUpload(ev.target.files);
+                  ev.target.value = "";
+                }}
+              />
+            </label>
+            <button type="button" className="btn" disabled={busy || !dirty} onClick={() => void onSave()}>
+              {busy ? "Сохранение…" : dirty ? "Сохранить" : "Сохранено"}
+            </button>
+          </>
+        ) : null
+      }
     >
-      <form onSubmit={onSave}>
-        <Card
-          title={`Баннеры · ${previews.length}`}
-          subtitle={`Версия контента: ${adsVersion}`}
-          actions={
-            canEdit ? (
-              <>
-                <label className="file-btn">
-                  {uploading ? "Загрузка…" : "Добавить файл"}
-                  <input
-                    type="file"
-                    accept="image/*"
-                    hidden
-                    disabled={busy || uploading}
-                    onChange={(ev) => {
-                      void onUpload(ev.target.files?.[0]);
-                      ev.target.value = "";
-                    }}
-                  />
-                </label>
-                <button className="btn" disabled={busy || !dirty}>
-                  {busy ? "Сохранение…" : "Сохранить"}
-                </button>
-              </>
-            ) : null
-          }
-        >
-          <div className="media-gallery media-gallery--editor ads-gallery">
-            {previews.map((g, i) => (
-              <div key={g.id} className="media-gallery__item">
+      <div className="admin-toolbar">
+        <ul className="admin-toolbar__stats">
+          <li>
+            <strong>{String(previews.length).padStart(2, "0")}</strong>
+            <span>баннеров</span>
+          </li>
+          <li>
+            <strong className="admin-toolbar__ver">{adsVersion}</strong>
+            <span>версия</span>
+          </li>
+          <li>
+            <strong className={dirty ? "is-warn" : "is-ok"}>{dirty ? "черновик" : "чисто"}</strong>
+            <span>статус</span>
+          </li>
+        </ul>
+        <p className="admin-toolbar__hint">Рекомендуемый формат — вертикальный jpg/png/webp.</p>
+      </div>
+
+      {!previews.length ? (
+        <div className="admin-empty">
+          <p className="admin-empty__title">Баннеров пока нет</p>
+          <p className="admin-empty__text">
+            Загрузите один или несколько файлов — на киосках они будут крутиться в правой колонке.
+          </p>
+          {canEdit ? (
+            <label className="file-btn">
+              {uploading ? "Загрузка…" : "Загрузить первый баннер"}
+              <input
+                type="file"
+                accept="image/*"
+                multiple
+                hidden
+                disabled={uploading}
+                onChange={(ev) => {
+                  void onUpload(ev.target.files);
+                  ev.target.value = "";
+                }}
+              />
+            </label>
+          ) : null}
+        </div>
+      ) : (
+        <div className="ads-board">
+          {previews.map((g, i) => (
+            <article key={g.id} className="ads-card">
+              <div className="ads-card__media">
                 <img src={g.url} alt="" />
-                <span className="ads-gallery__idx">{String(i + 1).padStart(2, "0")}</span>
+                <span className="ads-card__idx">{String(i + 1).padStart(2, "0")}</span>
+              </div>
+              <div className="ads-card__body">
+                <p className="ads-card__name" title={g.filename || g.id}>
+                  {g.filename || g.id.slice(0, 10)}
+                </p>
+                <p className="ads-card__meta">Слот {i + 1} в ротации</p>
                 {canEdit ? (
-                  <button type="button" className="media-gallery__remove" onClick={() => removeItem(g.id)}>
-                    Убрать
-                  </button>
+                  <div className="ads-card__actions">
+                    <button
+                      type="button"
+                      className="btn secondary"
+                      disabled={i === 0}
+                      onClick={() => moveItem(g.id, -1)}
+                    >
+                      ←
+                    </button>
+                    <button
+                      type="button"
+                      className="btn secondary"
+                      disabled={i === previews.length - 1}
+                      onClick={() => moveItem(g.id, 1)}
+                    >
+                      →
+                    </button>
+                    <button type="button" className="btn danger" onClick={() => removeItem(g.id)}>
+                      Убрать
+                    </button>
+                  </div>
                 ) : null}
               </div>
-            ))}
-            {!previews.length ? (
-              <div className="media-gallery__empty cx-empty">
-                <p className="cx-empty__title">Баннеров пока нет</p>
-                <p className="muted">Загрузите jpg, png или webp</p>
-              </div>
-            ) : null}
-          </div>
-        </Card>
-      </form>
+            </article>
+          ))}
+        </div>
+      )}
     </PageShell>
   );
 }

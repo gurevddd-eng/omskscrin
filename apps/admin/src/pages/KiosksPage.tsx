@@ -104,7 +104,14 @@ export function KiosksPage() {
               </Alert>
             ) : null}
             <KioskFleetJobsBanner jobs={p.fleetJobs} />
-            {p.deploy ? <DeployStatusPanel deploy={p.deploy} /> : null}
+            {p.deploy ? (
+              <DeployStatusPanel
+                deploy={p.deploy}
+                onRefresh={p.refresh}
+                refreshing={p.refreshing}
+                fleet={p.deployFleet}
+              />
+            ) : null}
           </>
         }
       >
