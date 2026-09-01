@@ -78,6 +78,7 @@ export async function requestKioskGameInstall(id: string, _body: GameBody = {}) 
     return { ok: false as const, status: 404, message: "Киоск не найден", kiosk: null };
   }
   const agent = await postAgentGame(kiosk.hostname, kiosk.healthPort, "/install-game", {});
+  if (!agent.ok) {
     return {
       ok: false as const,
       status: agent.status >= 400 ? agent.status : 400,
