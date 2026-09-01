@@ -1,14 +1,15 @@
-import { useEffect, useState, useCallback } from "react";
-import { NavLink, Outlet, Navigate, useLocation, Link } from "react-router-dom";
+import { useCallback, useEffect, useState } from "react";
+import { Outlet, Navigate, useLocation } from "react-router-dom";
 import type { KioskDto } from "@stella/shared";
 import { useAuth } from "../../auth";
 import { api } from "../../api";
-import { PRIMARY_NAV, getPageMeta, navIsActive } from "./nav";
+import { getPageMeta } from "./nav";
+import { Sidebar } from "./Sidebar";
 
 export function AppLayout() {
   const { user, loading, logout } = useAuth();
   const location = useLocation();
-  const [mobileNav, setMobileNav] = useState(false);
+  const [mobileOpen, setMobileOpen] = useState(false);
   const [fleetOnline, setFleetOnline] = useState<{ online: number; total: number } | null>(null);
 
   const refreshFleet = useCallback(() => {
@@ -29,22 +30,22 @@ export function AppLayout() {
   }, [refreshFleet]);
 
   useEffect(() => {
-    setMobileNav(false);
+    setMobileOpen(false);
   }, [location.pathname]);
 
   useEffect(() => {
-    if (!mobileNav) return;
+    if (!mobileOpen) return;
     function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") setMobileNav(false);
+      if (e.key === "Escape") setMobileOpen(false);
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [mobileNav]);
+  }, [mobileOpen]);
 
   if (loading) {
     return (
-      <div className="cx-loading">
-        <span className="cx-loading__spin" aria-hidden />
+      <div className="st-loading">
+        <span className="st-loading__spin" aria-hidden />
         Загрузка…
       </div>
     );
@@ -54,110 +55,50 @@ export function AppLayout() {
   const meta = getPageMeta(location.pathname);
 
   return (
-    <div className="cx-app">
-      <header className="cx-header">
-        <div className="cx-header__glow" aria-hidden />
-        <div className="cx-header__bar">
-          <NavLink to="/" className="cx-brand" end onClick={() => setMobileNav(false)}>
-            <span className="cx-brand__glyph" aria-hidden>
-              <span />
-              <span />
-              <span />
-            </span>
-            <span className="cx-brand__text">
-              <span className="cx-brand__mark">Омскэкран</span>
-              <span className="cx-brand__sub">Админка</span>
-            </span>
-          </NavLink>
+    <div className={`st-shell${mobileOpen ? " is-nav-open" : ""}`}>
+      <Sidebar
+        pathname={location.pathname}
+        login={user.login}
+        fleetOnline={fleetOnline}
+        onLogout={logout}
+        onNavigate={() => setMobileOpen(false)}
+      />
 
-          <nav className={`cx-nav${mobileNav ? " is-open" : ""}`} aria-label="Разделы админки">
-            <div className="cx-nav__rail">
-              {PRIMARY_NAV.map((item) => {
-                const active = navIsActive(location.pathname, item.to, item.end);
-                return (
-                  <NavLink
-                    key={item.to}
-                    to={item.to}
-                    end={item.end}
-                    className={`cx-nav__link${active ? " is-active" : ""}`}
-                    onClick={() => setMobileNav(false)}
-                  >
-                    {item.label}
-                  </NavLink>
-                );
-              })}
-            </div>
-
-            <div className="cx-nav__mobile-user">
-              <div className="cx-user-chip">
-                <span className="cx-user-chip__avatar">{user.login.slice(0, 1).toUpperCase()}</span>
-                <span className="cx-user-chip__meta">
-                  <strong>{user.login}</strong>
-                </span>
-              </div>
-              <button type="button" className="btn ghost cx-user-chip__out" onClick={logout}>
-                Выйти
-              </button>
-            </div>
-          </nav>
-
-          <div className="cx-header__trail">
-            {fleetOnline && fleetOnline.total > 0 ? (
-              <Link to="/kiosks" className="cx-fleet-pill" title="Киоски онлайн">
-                <span className={`cx-fleet-pill__dot${fleetOnline.online < fleetOnline.total ? " is-warn" : ""}`} />
-                {fleetOnline.online}/{fleetOnline.total} онлайн
-              </Link>
-            ) : null}
-
-            <div className="cx-header__user">
-              <div className="cx-user-chip">
-                <span className="cx-user-chip__avatar" aria-hidden>
-                  {user.login.slice(0, 1).toUpperCase()}
-                </span>
-                <span className="cx-user-chip__meta">
-                  <strong>{user.login}</strong>
-                </span>
-              </div>
-              <button type="button" className="btn ghost cx-user-chip__out" onClick={logout}>
-                Выйти
-              </button>
-            </div>
-
-            <button
-              type="button"
-              className={`cx-header__toggle${mobileNav ? " is-open" : ""}`}
-              aria-expanded={mobileNav}
-              aria-label={mobileNav ? "Закрыть меню" : "Открыть меню"}
-              onClick={() => setMobileNav((v) => !v)}
-            >
-              <span />
-              <span />
-              <span />
-            </button>
-          </div>
-        </div>
-
-        <div className="cx-header__context" aria-label="Текущий раздел">
-          <span className="cx-header__crumb">{meta.section}</span>
-          <span className="cx-header__sep" aria-hidden>
-            /
-          </span>
-          <span className="cx-header__page">{meta.title}</span>
-        </div>
-      </header>
-
-      {mobileNav ? (
+      {mobileOpen ? (
         <button
           type="button"
-          className="cx-nav-scrim"
+          className="st-scrim"
           aria-label="Закрыть меню"
-          onClick={() => setMobileNav(false)}
+          onClick={() => setMobileOpen(false)}
         />
       ) : null}
 
-      <main className="cx-main">
-        <Outlet />
-      </main>
+      <div className="st-main">
+        <header className="st-topbar">
+          <button
+            type="button"
+            className={`st-topbar__menu${mobileOpen ? " is-open" : ""}`}
+            aria-expanded={mobileOpen}
+            aria-label={mobileOpen ? "Закрыть меню" : "Открыть меню"}
+            onClick={() => setMobileOpen((v) => !v)}
+          >
+            <span />
+            <span />
+            <span />
+          </button>
+          <div className="st-topbar__trail">
+            <span className="st-topbar__section">{meta.section}</span>
+            <span className="st-topbar__sep" aria-hidden>
+              /
+            </span>
+            <span className="st-topbar__page">{meta.title}</span>
+          </div>
+        </header>
+
+        <main className="st-content">
+          <Outlet />
+        </main>
+      </div>
     </div>
   );
 }

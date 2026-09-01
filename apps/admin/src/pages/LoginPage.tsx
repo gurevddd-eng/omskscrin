@@ -11,8 +11,8 @@ export function LoginPage() {
 
   if (loading) {
     return (
-      <div className="cx-loading cx-loading--full">
-        <span className="cx-loading__spin" aria-hidden />
+      <div className="st-loading">
+        <span className="st-loading__spin" aria-hidden />
         Загрузка…
       </div>
     );
@@ -35,21 +35,21 @@ export function LoginPage() {
   return (
     <div className="cx-login">
       <div className="cx-login__panel cx-login__panel--brand">
-        <p className="cx-login__eyebrow">Омскэкран · информационные киоски</p>
-        <h1 className="cx-login__title">Админка Омскэкран</h1>
+        <p className="cx-login__eyebrow">Парк Победы · информационные киоски</p>
+        <h1 className="cx-login__title">Омскэкран</h1>
         <p className="cx-login__lead">
-          Debian-сервер, Windows-киоски, контент и lockdown — единая точка управления.
+          Управление контентом, киосками и обновлениями — в одном месте.
         </p>
         <ul className="cx-login__list">
-          <li>Быстрый доступ ко всем разделам</li>
-          <li>Экспонаты и реклама</li>
-          <li>Удалённая установка и конфиг</li>
+          <li>Обзор парка в реальном времени</li>
+          <li>Экспонаты, хроника и реклама</li>
+          <li>OTA и удалённое управление Windows-киосками</li>
         </ul>
       </div>
       <div className="cx-login__panel">
         <form className="cx-login__form stack" onSubmit={onSubmit}>
-          <h2>Вход</h2>
-          <p className="muted">Учётная запись админки</p>
+          <h2>Вход в админку</h2>
+          <p className="muted">Учётная запись администратора</p>
           <label>
             Логин
             <input
