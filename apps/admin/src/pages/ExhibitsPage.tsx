@@ -2,10 +2,7 @@ import { FormEvent, useEffect, useMemo, useState, type KeyboardEvent } from "rea
 import { useNavigate } from "react-router-dom";
 import {
   formatSpecsText,
-  joinGameShareUnc,
-  normalizeGameShareFolder,
   parseSpecsText,
-  type GameShareDto,
   type SpecRow,
 } from "@stella/shared";
 import { useAuth } from "../auth";
@@ -38,8 +35,6 @@ type Exhibit = {
   audio?: MediaRef | null;
   gallery?: MediaRef[];
   gameTitle?: string;
-  gameShareFolder?: string;
-  gameExe?: string;
 };
 
 type FormState = {
@@ -57,8 +52,6 @@ type FormState = {
   audioName: string | null;
   galleryPreviews: MediaRef[];
   gameTitle: string;
-  gameShareFolder: string;
-  gameExe: string;
 };
 
 const emptyForm = (): FormState => ({
@@ -76,8 +69,6 @@ const emptyForm = (): FormState => ({
   audioName: null,
   galleryPreviews: [],
   gameTitle: "Играть",
-  gameShareFolder: "",
-  gameExe: "",
 });
 
 /** Stable snapshot for dirty detection (ignore TipTap cosmetic HTML differences). */
@@ -92,8 +83,6 @@ function formFingerprint(f: FormState): string {
     videoId: f.videoId,
     audioId: f.audioId,
     gameTitle: f.gameTitle || "Играть",
-    gameShareFolder: f.gameShareFolder || "",
-    gameExe: f.gameExe || "",
   });
 }
 
@@ -113,8 +102,6 @@ function exhibitToForm(e: Exhibit): FormState {
     audioName: e.audio?.filename ?? null,
     galleryPreviews: e.gallery ?? [],
     gameTitle: e.gameTitle || "Играть",
-    gameShareFolder: e.gameShareFolder || "",
-    gameExe: e.gameExe || "",
   };
 }
 
@@ -134,8 +121,6 @@ export function ExhibitsPage() {
   );
   const [baseline, setBaseline] = useState(() => formFingerprint(emptyForm()));
   const [savedNote, setSavedNote] = useState("");
-  const [gameShare, setGameShare] = useState<GameShareDto | null>(null);
-
   const dirty = useMemo(
     () => mode === "edit" && formFingerprint(form) !== baseline,
     [mode, form, baseline]
@@ -147,9 +132,6 @@ export function ExhibitsPage() {
 
   useEffect(() => {
     load().catch((e) => setError(e.message));
-    api<GameShareDto>("/api/game-share")
-      .then(setGameShare)
-      .catch(() => setGameShare(null));
   }, []);
 
   const filtered = useMemo(() => {
@@ -265,39 +247,6 @@ export function ExhibitsPage() {
   }
 
   const specsPreview = useMemo(() => parseSpecsText(form.specsText), [form.specsText]);
-  const selectedGameFolder = useMemo(
-    () => gameShare?.folders?.find((f) => f.name === form.gameShareFolder) ?? null,
-    [gameShare, form.gameShareFolder]
-  );
-  const gameFullPath = useMemo(
-    () =>
-      form.gameShareFolder
-        ? joinGameShareUnc(gameShare?.unc, form.gameShareFolder)
-        : gameShare?.unc || "",
-    [gameShare?.unc, form.gameShareFolder]
-  );
-
-  function applyGameFolderInput(raw: string) {
-    const normalized = normalizeGameShareFolder(gameShare?.unc, raw);
-    setForm((f) => {
-      if (f.gameShareFolder === normalized) return f;
-      return { ...f, gameShareFolder: normalized, gameExe: "" };
-    });
-  }
-
-  function applyFullGamePath(raw: string) {
-    const normalized = normalizeGameShareFolder(gameShare?.unc, raw);
-    setForm((f) => {
-      const folder = gameShare?.folders?.find((x) => x.name === normalized);
-      const nextExe = folder?.exes?.[0] || f.gameExe || "";
-      if (f.gameShareFolder === normalized && f.gameExe === nextExe) return f;
-      return {
-        ...f,
-        gameShareFolder: normalized,
-        gameExe: nextExe,
-      };
-    });
-  }
 
   async function saveExhibit() {
     if (!canEdit) {
@@ -325,9 +274,9 @@ export function ExhibitsPage() {
         galleryIds: form.galleryIds,
         videoId: form.videoId,
         audioId: form.audioId,
-        gameTitle: form.gameTitle,
-        gameShareFolder: form.gameShareFolder || null,
-        gameExe: form.gameExe || null,
+        gameTitle: form.gameTitle.trim() || null,
+        gameShareFolder: null,
+        gameExe: null,
       };
       const saved = editId
         ? await api<Exhibit>(`/api/exhibits/${editId}`, { method: "PATCH", json: payload })
@@ -707,128 +656,24 @@ export function ExhibitsPage() {
               </fieldset>
             </Card>
 
-            <Card title="Игра на киоске" subtitle="Кнопка «Играть» и проверка C:\PatriotGame">
+            <Card title="Игра на киоске" subtitle="Предустановлена в C:\PatriotGame">
               <fieldset disabled={!canEdit} className="exhibit-editor__fields exhibit-editor__game">
                 <p className="field-hint">
-                  Игра предустановлена на киоске в <code>C:\PatriotGame</code> (
-                  <code>game.exe</code>, <code>window.txt</code>). Stella с шары ничего не копирует —
-                  укажите только подпись кнопки.
+                  На киоске игра уже лежит в <code>C:\PatriotGame</code>. Stella запускает{" "}
+                  <code>game.exe</code> и пишет <code>window.txt=1</code> для Stelarium. С шары ничего
+                  не копируется — укажите только подпись кнопки в интерфейсе.
                 </p>
                 <label>
-                  Подпись кнопки
+                  Подпись кнопки «Играть»
                   <input
                     value={form.gameTitle}
                     onChange={(e) => patchForm({ gameTitle: e.target.value })}
                     placeholder="Играть"
                   />
                 </label>
-                {gameShare?.folders?.length ? (
-                  <label>
-                    Папка из списка (с киоска)
-                    <select
-                      value={
-                        gameShare.folders.some((f) => f.name === form.gameShareFolder)
-                          ? form.gameShareFolder
-                          : ""
-                      }
-                      onChange={(e) => applyGameFolderInput(e.target.value)}
-                    >
-                      <option value="">— выберите или укажите вручную —</option>
-                      {gameShare.folders.map((f) => (
-                        <option key={f.name} value={f.name}>
-                          {f.name}
-                          {f.exes?.length ? ` (${f.exes.length} exe)` : ""}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
+                {!form.gameTitle.trim() ? (
+                  <p className="field-hint muted">Без подписи кнопка «Играть» на киоске не показывается.</p>
                 ) : null}
-                <label>
-                  Папка на шаре (имя или полный UNC)
-                  <input
-                    value={form.gameShareFolder}
-                    onChange={(e) => applyGameFolderInput(e.target.value)}
-                    onBlur={(e) => applyGameFolderInput(e.target.value)}
-                    placeholder="PatriotGame 1stela"
-                    spellCheck={false}
-                  />
-                </label>
-                <label>
-                  Вставить полный путь к папке игры
-                  <input
-                    key={`full-${form.gameShareFolder}`}
-                    defaultValue=""
-                    onBlur={(e) => {
-                      const v = e.target.value.trim();
-                      if (!v) return;
-                      applyFullGamePath(v);
-                      e.target.value = "";
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.key !== "Enter") return;
-                      e.preventDefault();
-                      const el = e.target as HTMLInputElement;
-                      const v = el.value.trim();
-                      if (!v) return;
-                      applyFullGamePath(v);
-                      el.value = "";
-                    }}
-                    placeholder="\\HYDRALISK3\Patriot\Игры парк победы\PatriotGame 1stela"
-                    spellCheck={false}
-                  />
-                </label>
-                {form.gameShareFolder ? (
-                  <p className="field-hint">
-                    Итоговый путь копирования: <code>{gameFullPath}</code>
-                  </p>
-                ) : null}
-                <label>
-                  Файл .exe
-                  {selectedGameFolder?.exes?.length ? (
-                    <select
-                      value={form.gameExe}
-                      onChange={(e) => patchForm({ gameExe: e.target.value })}
-                      disabled={!form.gameShareFolder}
-                    >
-                      <option value="">Выберите .exe</option>
-                      {selectedGameFolder.exes.map((exe) => (
-                        <option key={exe} value={exe}>
-                          {exe}
-                        </option>
-                      ))}
-                    </select>
-                  ) : (
-                    <input
-                      value={form.gameExe}
-                      onChange={(e) => patchForm({ gameExe: e.target.value })}
-                      placeholder="game.exe"
-                      disabled={!form.gameShareFolder}
-                      spellCheck={false}
-                    />
-                  )}
-                </label>
-                {selectedGameFolder?.exes?.length ? (
-                  <div className="exhibit-game__list">
-                    <div className="media-block__title">Найденные .exe</div>
-                    <div className="exhibit-game__chips">
-                      {selectedGameFolder.exes.map((exe) => (
-                        <button
-                          key={exe}
-                          type="button"
-                          className={`btn ghost${form.gameExe === exe ? " is-active" : ""}`}
-                          onClick={() => patchForm({ gameExe: exe })}
-                        >
-                          {exe}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                ) : null}
-                <span className="field-hint">
-                  {gameShare?.scannedAt
-                    ? `Список папок с киоска ${gameShare.sourceHostname || "—"} · ${new Date(gameShare.scannedAt).toLocaleString("ru-RU")}`
-                    : "Список папок появится, когда киоск в домене увидит шару. Можно указать путь вручную."}
-                </span>
               </fieldset>
             </Card>
           </div>

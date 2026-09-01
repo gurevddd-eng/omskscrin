@@ -68,7 +68,6 @@ export function useKiosksPage() {
   const [clearingPolicies, setClearingPolicies] = useState<string | null>(null);
   const [updatingSoftware, setUpdatingSoftware] = useState<string | null>(null);
   const [installingGame, setInstallingGame] = useState<string | null>(null);
-  const [uninstallingGame, setUninstallingGame] = useState<string | null>(null);
   const [bulkUpdating, setBulkUpdating] = useState(false);
   const [creating, setCreating] = useState(false);
   const [binding, setBinding] = useState<string | null>(null);
@@ -643,35 +642,9 @@ export function useKiosksPage() {
       if (res.kiosk) patchKiosk(res.kiosk);
       setOkHint(res.message || "Проверка игры завершена");
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Не удалось установить игру");
+      setError(e instanceof Error ? e.message : "Не удалось проверить игру");
     } finally {
       setInstallingGame(null);
-    }
-  }
-
-  async function uninstallGame(id: string) {
-    const k = kiosks.find((x) => x.id === id);
-    const label = k?.exhibitGame?.title || k?.exhibitGame?.shareFolder || "игру";
-    const ok = await confirmDialog({
-      title: "Удалить игру с киоска?",
-      message: `Локальная копия «${label}» будет удалена с диска. С шары ничего не удалится.`,
-      confirmLabel: "Удалить",
-      tone: "warn",
-    });
-    if (!ok) return;
-    setUninstallingGame(id);
-    setError("");
-    try {
-      const res = await api<{ message: string; kiosk: KioskDto }>(
-        `/api/kiosks/${id}/uninstall-game`,
-        { method: "POST", json: {} }
-      );
-      if (res.kiosk) patchKiosk(res.kiosk);
-      setOkHint(res.message || "Игра удалена");
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Не удалось удалить игру");
-    } finally {
-      setUninstallingGame(null);
     }
   }
 
@@ -886,17 +859,9 @@ export function useKiosksPage() {
     }
     if (installingGame) {
       return {
-        title: "Установка игры",
+        title: "Проверка игры",
         target: findLabel(installingGame),
-        detail: "Копирование с UNC-шары на киоск…",
-      };
-    }
-    if (uninstallingGame) {
-      return {
-        title: "Удаление игры",
-        target: findLabel(uninstallingGame),
-        detail: "Удаление локальной копии…",
-        tone: "warn",
+        detail: "Проверка C:\\PatriotGame на киоске…",
       };
     }
     if (installing) {
@@ -984,7 +949,6 @@ export function useKiosksPage() {
     removingAdmin,
     updatingSoftware,
     installingGame,
-    uninstallingGame,
     installing,
     cancelling,
     starting,
@@ -1021,11 +985,11 @@ export function useKiosksPage() {
           label: `OTA → ${k.otaTarget || otaWaiting[k.id] || "пакет"}`,
         });
       }
-      if (k.gameCopy?.status === "copying") {
+      if (k.gameCopy?.status === "launching" || k.gameCopy?.status === "running") {
         jobs.push({
           id: `${k.id}-game`,
           kioskName: name,
-          label: `Игра · ${k.gameCopy.folder || "копирование"}`,
+          label: `Игра · ${k.gameCopy.message || "запуск"}`,
         });
       }
     }
@@ -1093,7 +1057,6 @@ export function useKiosksPage() {
     clearingPolicies,
     updatingSoftware,
     installingGame,
-    uninstallingGame,
     creating,
     binding,
     removingAdmin,
@@ -1108,7 +1071,6 @@ export function useKiosksPage() {
     stopKiosk,
     softwareUpdateOne,
     installGame,
-    uninstallGame,
     removeFromAdmin,
     removeFull,
     saveNetwork,

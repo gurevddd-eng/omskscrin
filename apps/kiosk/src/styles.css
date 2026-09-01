@@ -1204,6 +1204,16 @@ img {
   cursor: default;
 }
 
+.btn-ghost--stop {
+  border-color: rgba(255, 120, 120, 0.55);
+  color: #ffd4d4;
+}
+
+.btn-ghost--stop:hover:not(:disabled) {
+  background: rgba(180, 40, 40, 0.35);
+  border-color: rgba(255, 140, 140, 0.75);
+}
+
 .home-copy__error {
   margin: 0;
   color: #ffb4b4;

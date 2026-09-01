@@ -51,6 +51,14 @@ async function normalizeExhibitGameFields(input: {
   gameShareFolder?: string | null;
   gameExe?: string | null;
 }) {
+  const title = normalizeGameField(input.gameTitle);
+  if (title) {
+    return {
+      gameTitle: title,
+      gameShareFolder: "",
+      gameExe: "",
+    };
+  }
   const settings = await ensureSiteSettings();
   const unc = settings.gameShareUnc;
   const folder =

@@ -174,13 +174,13 @@ function buildGameLane(k: KioskDto): Lane | null {
     subtitle = GAME_COPY_STATUS_LABEL[status];
     tone = "run";
   } else {
-    title = "Игра на киоске";
+    title = "C:\\PatriotGame";
     subtitle =
       installed.length > 0
-        ? `${installed.length} на диске`
+        ? "Игра на киоске"
         : gc?.folder
           ? String(gc.folder)
-          : "Установлена";
+          : "Не проверялась";
     tone = "done";
   }
 
@@ -411,15 +411,14 @@ export function KioskLifecyclePanel({ kiosk, deployTarget, updating }: Props) {
 
       {Array.isArray(k.installedGames) && k.installedGames.length > 0 ? (
         <div className="kx-life__games">
-          <h4 className="kx-life__status-title">Установленные игры</h4>
+          <h4 className="kx-life__status-title">PatriotGame</h4>
           <ul className="kx-life__games-list">
             {k.installedGames.map((name) => (
               <li key={name} className="kx-life__games-item">
                 <span className="kx-life__games-name">{name}</span>
-                {k.gameCopy?.folder === name && k.gameCopy.status === "running" ? (
+                {k.gameCopy?.status === "running" ? (
                   <span className="kx-life__games-tag is-run">запущена</span>
-                ) : k.gameCopy?.folder === name &&
-                  (k.gameCopy.status === "copying" || k.gameCopy.status === "launching") ? (
+                ) : k.gameCopy?.status === "launching" ? (
                   <span className="kx-life__games-tag is-run">
                     {GAME_COPY_STATUS_LABEL[k.gameCopy.status]}
                   </span>

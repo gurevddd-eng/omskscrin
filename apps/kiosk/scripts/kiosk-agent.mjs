@@ -398,6 +398,9 @@ function findLocalGameExe(localFolder, exeRel) {
 }
 
 function patchGameCopy(partial) {
+  if (partial.status === "running" || partial.status === "launching") {
+    markGameActive();
+  }
   gameCopy = {
     ...gameCopy,
     ...partial,
@@ -516,6 +519,248 @@ function checkPatriotGameReady() {
     bytes,
     message: `Игра на киоске · ${formatBytes(bytes)}`,
   };
+}
+
+const GAME_INACTIVITY_MS = 10 * 60 * 1000;
+const GAME_ACTIVITY_POLL_MS = 30_000;
+let lastGameActivityAt = 0;
+let gameInactivityBusy = false;
+
+function markGameActive() {
+  lastGameActivityAt = Date.now();
+}
+
+function testPatriotGameRunningSync() {
+  try {
+    const names = patriotGameProcessNames.map((n) => `'${n.replace(/'/g, "''")}'`).join(", ");
+    const out = execPowerShell([
+      "-Command",
+      `$found=$false; foreach ($n in @(${names})) { if (Get-Process -Name $n -ErrorAction SilentlyContinue) { $found=$true; break } }; if ($found) { '1' } else { '0' }`,
+    ]);
+    return String(out).trim() === "1";
+  } catch {
+    return false;
+  }
+}
+
+function buildResolveUserPsBlock(cachedUser = "") {
+  const cachedEsc = String(cachedUser || readCachedConsoleUser() || "").replace(/'/g, "''");
+  return (
+    "function Resolve-User {\n" +
+    "  $ErrorActionPreference = 'SilentlyContinue'\n" +
+    "  $cs = Get-CimInstance Win32_ComputerSystem\n" +
+    "  if ($cs -and $cs.UserName) { return $cs.UserName }\n" +
+    "  $proc = Get-CimInstance Win32_Process -Filter \"Name = 'explorer.exe'\" -ErrorAction SilentlyContinue | Select-Object -First 1\n" +
+    "  if ($proc) {\n" +
+    "    $o = Invoke-CimMethod -InputObject $proc -MethodName GetOwner -ErrorAction SilentlyContinue\n" +
+    "    if ($o -and $o.User) {\n" +
+    "      if ($o.Domain) { return \"$($o.Domain)\\$($o.User)\" }\n" +
+    "      return $o.User\n" +
+    "    }\n" +
+    "  }\n" +
+    "  Get-CimInstance Win32_Process | ForEach-Object {\n" +
+    "    if ($_.SessionId -gt 0 -and $_.Name -match '^(msedge|sihost|taskhostw|ApplicationFrameHost|ShellExperienceHost)\\.exe$') {\n" +
+    "      $o = Invoke-CimMethod -InputObject $_ -MethodName GetOwner -ErrorAction SilentlyContinue\n" +
+    "      if ($o -and $o.User -and $o.User -notin @('SYSTEM','LOCAL SERVICE','NETWORK SERVICE')) {\n" +
+    "        if ($o.Domain) { return \"$($o.Domain)\\$($o.User)\" }\n" +
+    "        return $o.User\n" +
+    "      }\n" +
+    "    }\n" +
+    "  }\n" +
+    "  $cached = '" +
+    cachedEsc +
+    "'\n" +
+    "  if ($cached) { return $cached }\n" +
+    "  return $null\n" +
+    "}\n"
+  );
+}
+
+function buildRaiseGameWindowPs() {
+  return (
+    "$ErrorActionPreference = 'SilentlyContinue'\n" +
+    "Add-Type @\"\n" +
+    "using System;\n" +
+    "using System.Runtime.InteropServices;\n" +
+    "public static class StellaGameTop {\n" +
+    "  public static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);\n" +
+    "  [DllImport(\"user32.dll\")] public static extern bool SetForegroundWindow(IntPtr hWnd);\n" +
+    "  [DllImport(\"user32.dll\")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);\n" +
+    "  [DllImport(\"user32.dll\")] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);\n" +
+    "  [DllImport(\"user32.dll\")] public static extern bool BringWindowToTop(IntPtr hWnd);\n" +
+    "}\n" +
+    "\"@\n" +
+    "function Raise-GameWindow {\n" +
+    "  foreach ($n in @('Tanks-Win64-Shipping','game')) {\n" +
+    "    foreach ($gp in Get-Process -Name $n -ErrorAction SilentlyContinue) {\n" +
+    "      $h = $gp.MainWindowHandle\n" +
+    "      if ($h -eq [IntPtr]::Zero) { continue }\n" +
+    "      [void][StellaGameTop]::ShowWindow($h, 9)\n" +
+    "      [void][StellaGameTop]::SetWindowPos($h, [StellaGameTop]::HWND_TOPMOST, 0, 0, 0, 0, 0x0003)\n" +
+    "      [void][StellaGameTop]::BringWindowToTop($h)\n" +
+    "      [void][StellaGameTop]::SetForegroundWindow($h)\n" +
+    "      return $true\n" +
+    "    }\n" +
+    "  }\n" +
+    "  return $false\n" +
+    "}\n" +
+    "for ($i=0; $i -lt 60; $i++) {\n" +
+    "  if (Raise-GameWindow) { Start-Sleep -Milliseconds 500; Raise-GameWindow | Out-Null; break }\n" +
+    "  Start-Sleep -Milliseconds 250\n" +
+    "}\n" +
+    "for ($i=0; $i -lt 15; $i++) { Raise-GameWindow | Out-Null; Start-Sleep -Milliseconds 400 }\n"
+  );
+}
+
+function ensureRaiseGameHelper() {
+  const helperPath = path.join(omskekranRoot, "_game_raise.ps1");
+  fs.mkdirSync(omskekranRoot, { recursive: true });
+  fs.writeFileSync(helperPath, buildRaiseGameWindowPs(), "utf8");
+  return helperPath;
+}
+
+function runInteractivePs1Once(helperPath, taskName) {
+  return new Promise((resolve, reject) => {
+    const helperEsc = String(helperPath).replace(/'/g, "''");
+    const taskEsc = String(taskName).replace(/'/g, "''");
+    const script =
+      "$ErrorActionPreference = 'Stop'\n" +
+      buildResolveUserPsBlock() +
+      "$user = Resolve-User\n" +
+      "if (-not $user) { exit 2 }\n" +
+      `$helper = '${helperEsc}'\n` +
+      `$task = '${taskEsc}'\n` +
+      "try { Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue | Out-Null } catch {}\n" +
+      "$arg = '-NoLogo -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"' + $helper + '\"'\n" +
+      "$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $arg\n" +
+      "$settings = New-ScheduledTaskSettingsSet -Hidden -ExecutionTimeLimit (New-TimeSpan -Minutes 2)\n" +
+      "$principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited\n" +
+      "Register-ScheduledTask -TaskName $task -Action $action -Settings $settings -Principal $principal -Force | Out-Null\n" +
+      "Start-ScheduledTask -TaskName $task -ErrorAction Stop | Out-Null\n" +
+      "for ($i=0; $i -lt 120; $i++) {\n" +
+      "  $info = Get-ScheduledTaskInfo -TaskName $task -ErrorAction SilentlyContinue\n" +
+      "  if ($info -and $info.State -ne 'Running') { break }\n" +
+      "  Start-Sleep -Milliseconds 500\n" +
+      "}\n" +
+      "try { Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue | Out-Null } catch {}\n";
+    const ps = spawnPowerShell(["-Command", script], { capture: true });
+    let err = "";
+    ps.stderr?.on("data", (d) => {
+      err += d;
+    });
+    ps.on("error", reject);
+    ps.on("close", (code) => {
+      if (code === 0) resolve(null);
+      else reject(new Error(err.trim() || `interactive task failed (${code})`));
+    });
+  });
+}
+
+async function focusPatriotGame() {
+  const helperPath = ensureRaiseGameHelper();
+  await runInteractivePs1Once(helperPath, "StellaKioskGameFocus");
+  markGameActive();
+}
+
+function stopPatriotGameSync(reason = "manual") {
+  const gameRootEsc = String(patriotGameRoot).replace(/'/g, "''");
+  const namesPs = patriotGameProcessNames.map((n) => `'${n.replace(/'/g, "''")}'`).join(", ");
+  try {
+    execPowerShell([
+      "-Command",
+      `$windowFile = Join-Path '${gameRootEsc}' 'window.txt'\n` +
+        "Set-Content -LiteralPath $windowFile -Value '0' -Encoding ASCII -NoNewline\n" +
+        `foreach ($n in @(${namesPs})) { Get-Process -Name $n -ErrorAction SilentlyContinue | Stop-Process -Force }\n`,
+    ]);
+  } catch (e) {
+    console.warn("[stella-agent] stop game failed:", e instanceof Error ? e.message : e);
+  }
+  const message =
+    reason === "inactivity" ? "Остановлена: нет активности 10 мин" : "Остановлена";
+  patchGameCopy({
+    status: "idle",
+    folder: "PatriotGame",
+    percent: null,
+    message,
+  });
+}
+
+function probeGameForegroundAsUser() {
+  return new Promise((resolve) => {
+    const outFile = path.join(omskekranRoot, "_game_fg.txt");
+    const helperPath = path.join(omskekranRoot, "_game_fg_probe.ps1");
+    const outEsc = String(outFile).replace(/'/g, "''");
+    const namesPs = patriotGameProcessNames.map((n) => `'${n.replace(/'/g, "''")}'`).join(", ");
+    const probeBody =
+      "$ErrorActionPreference = 'SilentlyContinue'\n" +
+      "Add-Type @\"\n" +
+      "using System;\n" +
+      "using System.Runtime.InteropServices;\n" +
+      "public static class StellaFg {\n" +
+      "  [DllImport(\"user32.dll\")] public static extern IntPtr GetForegroundWindow();\n" +
+      "  [DllImport(\"user32.dll\")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);\n" +
+      "}\n" +
+      "\"@\n" +
+      `$out = '${outEsc}'\n` +
+      "$fg = [StellaFg]::GetForegroundWindow()\n" +
+      "[uint32]$pid = 0\n" +
+      "[void][StellaFg]::GetWindowThreadProcessId($fg, [ref]$pid)\n" +
+      "$proc = Get-Process -Id $pid -ErrorAction SilentlyContinue\n" +
+      "$name = if ($proc) { $proc.Name } else { '' }\n" +
+      `$active = ($name -in @(${namesPs}))\n` +
+      "Set-Content -LiteralPath $out -Value ($(if ($active) { '1' } else { '0' })) -Encoding ASCII -NoNewline\n";
+    try {
+      fs.mkdirSync(omskekranRoot, { recursive: true });
+      fs.writeFileSync(helperPath, probeBody, "utf8");
+      if (fs.existsSync(outFile)) fs.unlinkSync(outFile);
+    } catch {
+      resolve(false);
+      return;
+    }
+    runInteractivePs1Once(helperPath, "StellaKioskGameFgProbe")
+      .then(() => {
+        try {
+          const raw = fs.readFileSync(outFile, "utf8").trim();
+          resolve(raw === "1");
+        } catch {
+          resolve(false);
+        }
+      })
+      .catch(() => resolve(false));
+  });
+}
+
+async function watchGameInactivity() {
+  if (gameInactivityBusy) return;
+  const busy =
+    gameCopy.status === "running" ||
+    gameCopy.status === "launching" ||
+    testPatriotGameRunningSync();
+  if (!busy) return;
+  gameInactivityBusy = true;
+  try {
+    if (lastGameActivityAt === 0) {
+      markGameActive();
+      return;
+    }
+    if (!testPatriotGameRunningSync()) {
+      if (gameCopy.status !== "idle") {
+        patchGameCopy({ status: "idle", folder: "PatriotGame", message: "Игра завершена" });
+      }
+      return;
+    }
+    const foreground = await probeGameForegroundAsUser();
+    if (foreground) {
+      markGameActive();
+      return;
+    }
+    if (lastGameActivityAt > 0 && Date.now() - lastGameActivityAt >= GAME_INACTIVITY_MS) {
+      console.warn("[stella-agent] Patriot game inactive 10m — stopping");
+      stopPatriotGameSync("inactivity");
+    }
+  } finally {
+    gameInactivityBusy = false;
+  }
 }
 
 /** Robocopy UNC → local as interactive console user. Returns robocopy-ish code 0–16 or -1. */
@@ -982,6 +1227,7 @@ const healthServer = http.createServer(async (req, res) => {
         folder: "PatriotGame",
         exe: path.basename(status.exe),
         bytes: status.bytes,
+        message: status.message,
       });
     });
     return;
@@ -996,6 +1242,46 @@ const healthServer = http.createServer(async (req, res) => {
     return;
   }
 
+  // Focus pre-running Patriot game (raise window).
+  if (req.method === "POST" && url.pathname === "/focus-game") {
+    req.on("end", () => {
+      if (updateInProgress || isStopRequested()) {
+        sendJson(res, 423, { ok: false, error: "Киоск занят, попробуйте позже" });
+        return;
+      }
+      if (!testPatriotGameRunningSync()) {
+        sendJson(res, 404, { ok: false, error: "Игра не запущена" });
+        return;
+      }
+      void focusPatriotGame()
+        .then(() => sendJson(res, 200, { ok: true }))
+        .catch((e) =>
+          sendJson(res, 500, {
+            ok: false,
+            error: e instanceof Error ? e.message : "Не удалось развернуть игру",
+          })
+        );
+    });
+    return;
+  }
+
+  // Stop Patriot game processes.
+  if (req.method === "POST" && url.pathname === "/stop-game") {
+    req.on("end", () => {
+      if (updateInProgress || isStopRequested()) {
+        sendJson(res, 423, { ok: false, error: "Киоск занят, попробуйте позже" });
+        return;
+      }
+      if (!testPatriotGameRunningSync() && gameCopy.status === "idle") {
+        sendJson(res, 200, { ok: true, already: true });
+        return;
+      }
+      stopPatriotGameSync("manual");
+      sendJson(res, 200, { ok: true });
+    });
+    return;
+  }
+
   // Launch C:\PatriotGame\game.exe + window.txt=1 (game pre-installed on kiosk).
   if (req.method === "POST" && url.pathname === "/launch-game") {
     let raw = "";
@@ -1004,7 +1290,24 @@ const healthServer = http.createServer(async (req, res) => {
       if (raw.length > 64_000) req.destroy();
     });
     req.on("end", () => {
-      if (updateInProgress || gameLaunchInProgress || isStopRequested()) {
+      if (updateInProgress || isStopRequested()) {
+        sendJson(res, 423, { ok: false, error: "Киоск занят, попробуйте позже" });
+        return;
+      }
+
+      if (testPatriotGameRunningSync()) {
+        void focusPatriotGame()
+          .then(() => sendJson(res, 200, { ok: true, focused: true }))
+          .catch((e) =>
+            sendJson(res, 500, {
+              ok: false,
+              error: e instanceof Error ? e.message : "Не удалось развернуть игру",
+            })
+          );
+        return;
+      }
+
+      if (gameLaunchInProgress) {
         sendJson(res, 423, { ok: false, error: "Киоск занят, попробуйте позже" });
         return;
       }
@@ -1050,38 +1353,10 @@ const healthServer = http.createServer(async (req, res) => {
             `$exe = '${exeEsc}'\n` +
             `$gameRoot = '${gameRootEsc}'\n` +
             `$windowFile = Join-Path $gameRoot 'window.txt'\n` +
+            "Set-Content -LiteralPath $windowFile -Value '0' -Encoding ASCII -NoNewline\n" +
             "Set-Content -LiteralPath $windowFile -Value '1' -Encoding ASCII -NoNewline\n" +
             "Start-Process -FilePath $exe -WorkingDirectory $gameRoot | Out-Null\n" +
-            "Add-Type @\"\n" +
-            "using System;\n" +
-            "using System.Runtime.InteropServices;\n" +
-            "public static class StellaGameTop {\n" +
-            "  public static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);\n" +
-            "  [DllImport(\"user32.dll\")] public static extern bool SetForegroundWindow(IntPtr hWnd);\n" +
-            "  [DllImport(\"user32.dll\")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);\n" +
-            "  [DllImport(\"user32.dll\")] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);\n" +
-            "  [DllImport(\"user32.dll\")] public static extern bool BringWindowToTop(IntPtr hWnd);\n" +
-            "}\n" +
-            "\"@\n" +
-            "function Raise-GameWindow {\n" +
-            "  foreach ($n in @('Tanks-Win64-Shipping','game')) {\n" +
-            "    foreach ($gp in Get-Process -Name $n -ErrorAction SilentlyContinue) {\n" +
-            "      $h = $gp.MainWindowHandle\n" +
-            "      if ($h -eq [IntPtr]::Zero) { continue }\n" +
-            "      [void][StellaGameTop]::ShowWindow($h, 9)\n" +
-            "      [void][StellaGameTop]::SetWindowPos($h, [StellaGameTop]::HWND_TOPMOST, 0, 0, 0, 0, 0x0003)\n" +
-            "      [void][StellaGameTop]::BringWindowToTop($h)\n" +
-            "      [void][StellaGameTop]::SetForegroundWindow($h)\n" +
-            "      return $true\n" +
-            "    }\n" +
-            "  }\n" +
-            "  return $false\n" +
-            "}\n" +
-            "for ($i=0; $i -lt 60; $i++) {\n" +
-            "  if (Raise-GameWindow) { Start-Sleep -Milliseconds 500; Raise-GameWindow | Out-Null; break }\n" +
-            "  Start-Sleep -Milliseconds 250\n" +
-            "}\n" +
-            "for ($i=0; $i -lt 15; $i++) { Raise-GameWindow | Out-Null; Start-Sleep -Milliseconds 400 }\n";
+            buildRaiseGameWindowPs().replace(/^\$ErrorActionPreference = 'SilentlyContinue'\n/, "");
           fs.mkdirSync(omskekranRoot, { recursive: true });
           fs.writeFileSync(helperPath, helperBody, "utf8");
 
@@ -2471,6 +2746,7 @@ writeBlockKeyboardFlag(wantKeyBlock);
 applyOsLockdownPolicies(wantKeyBlock);
 setTimeout(() => void watchEdgeUi(), 1_000);
 setInterval(() => void watchEdgeUi(), 3_000);
+setInterval(() => void watchGameInactivity(), GAME_ACTIVITY_POLL_MS);
 // LAUNCH_UI from admin Start — react within ~1s, not only on the 8s watchdog tick
 setInterval(() => {
   try {

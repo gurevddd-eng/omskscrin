@@ -22,7 +22,6 @@ export type KioskDetailProps = {
   clearingPolicies: boolean;
   updatingSoftware: boolean;
   installingGame: boolean;
-  uninstallingGame: boolean;
   binding: boolean;
   removingAdmin: boolean;
   removingFull: boolean;
@@ -37,7 +36,6 @@ export type KioskDetailProps = {
   onStop: (id: string) => void;
   onSoftwareUpdate: (id: string) => void;
   onInstallGame: (id: string) => void;
-  onUninstallGame: (id: string) => void;
   onRemoveFromAdmin: (id: string) => void;
   onRemoveFull: (id: string) => void;
   onSaveNetwork: (id: string, data: { healthPort: number; uiPort: number; serverUrl: string }) => void;
@@ -56,19 +54,12 @@ export function KioskDetail(props: KioskDetailProps) {
     k.gameCopy?.status === "launching" ||
     k.gameCopy?.status === "running";
   const exhibitGame = k.exhibitGame;
-  const gameFolder = exhibitGame?.shareFolder || null;
-  const gameInstalled = Boolean(
-    gameFolder &&
-      Array.isArray(k.installedGames) &&
-      k.installedGames.some((g) => g.toLowerCase() === gameFolder.toLowerCase())
-  );
   const locked =
     props.installing ||
     props.starting ||
     props.stopping ||
     props.updatingSoftware ||
     props.installingGame ||
-    props.uninstallingGame ||
     props.binding ||
     props.removingAdmin ||
     props.removingFull ||
@@ -197,13 +188,11 @@ export function KioskDetail(props: KioskDetailProps) {
                   title={
                     !exhibitGame
                       ? "В экспонате не задана подпись кнопки игры"
-                      : gameInstalled
-                        ? `Проверить «${exhibitGame.title}» в C:\\PatriotGame`
-                        : `Проверить «${exhibitGame.title}» в C:\\PatriotGame`
+                      : `Проверить C:\\PatriotGame (${exhibitGame.title})`
                   }
                   onClick={() => props.onInstallGame(k.id)}
                 >
-                  {props.installingGame ? "Проверка…" : gameInstalled ? "Проверить игру" : "Проверить игру"}
+                  {props.installingGame ? "Проверка…" : "Проверить игру"}
                 </button>
               </>
             )}

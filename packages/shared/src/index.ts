@@ -249,18 +249,24 @@ export interface GameCopyDto {
 }
 
 export const GAME_COPY_STATUS_LABEL: Record<GameCopyStatus, string> = {
-  idle: "Игра на диске",
-  copying: "Копирование игры…",
-  launching: "Запуск игры…",
+  idle: "C:\\PatriotGame готова",
+  copying: "Проверка игры…",
+  launching: "Запуск game.exe…",
   running: "Игра запущена",
   error: "Ошибка игры",
 };
 
 export const GAME_COPY_STATUS_STEPS: { id: GameCopyStatus; label: string }[] = [
-  { id: "copying", label: "Копирование" },
   { id: "launching", label: "Запуск" },
   { id: "running", label: "Работает" },
 ];
+
+/** Kiosk reports PatriotGame folder present under C:\\PatriotGame. */
+export function isPatriotGameOnKiosk(installedGames?: string[] | null): boolean {
+  return Boolean(
+    installedGames?.some((name) => String(name).toLowerCase() === "patriotgame")
+  );
+}
 
 export const DEFAULT_GAME_SHARE_UNC = "\\\\HYDRALISK3\\Patriot\\Игры парк победы";
 

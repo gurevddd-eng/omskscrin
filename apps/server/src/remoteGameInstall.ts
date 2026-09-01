@@ -94,7 +94,7 @@ export async function requestKioskGameInstall(id: string, _body: GameBody = {}) 
     percent: 100,
     copiedBytes: null,
     totalBytes: null,
-    message: agentMsg || `Игра в C:\\PatriotGame`,
+    message: agentMsg || "Игра найдена в C:\\PatriotGame",
     updatedAt: new Date().toISOString(),
   });
   const dto = enrichKioskDto(mapKiosk(kiosk));

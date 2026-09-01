@@ -314,10 +314,12 @@ export function App({ preview }: { preview?: KioskPreview } = {}) {
     return () => window.clearInterval(id);
   }, [themeMode, themeDarkFrom, themeDarkTo]);
   const [nativeShell, setNativeShell] = useState(false);
-  const [gameBusy, setGameBusy] = useState(false);
+  const [gameStatus, setGameStatus] = useState<string>("idle");
   const [gameError, setGameError] = useState<string | null>(null);
-  const [gamePhase, setGamePhase] = useState<string | null>(null);
+  const [gameActionBusy, setGameActionBusy] = useState(false);
   const previewMode = Boolean(preview);
+  const gameRunning = gameStatus === "running";
+  const gameLaunching = gameStatus === "launching";
 
   const bumpActivity = useCallback(() => {
     (window as unknown as { __lastActive?: number }).__lastActive = Date.now();
@@ -413,13 +415,62 @@ export function App({ preview }: { preview?: KioskPreview } = {}) {
     };
   }, [config, previewMode]);
 
+  const focusGame = useCallback(async () => {
+    if (previewMode || gameActionBusy) return;
+    setGameError(null);
+    setGameActionBusy(true);
+    bumpActivity();
+    try {
+      const res = await fetch(`http://127.0.0.1:${config?.healthPort || 47821}/focus-game`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+      if (!res.ok || body.ok === false) {
+        throw new Error(body.error || "Не удалось развернуть игру");
+      }
+    } catch (e) {
+      setGameError(e instanceof Error ? e.message : "Не удалось развернуть игру");
+    } finally {
+      setGameActionBusy(false);
+      bumpActivity();
+    }
+  }, [previewMode, gameActionBusy, bumpActivity, config]);
+
+  const stopGame = useCallback(async () => {
+    if (previewMode || gameActionBusy) return;
+    setGameError(null);
+    setGameActionBusy(true);
+    bumpActivity();
+    try {
+      const res = await fetch(`http://127.0.0.1:${config?.healthPort || 47821}/stop-game`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+      if (!res.ok || body.ok === false) {
+        throw new Error(body.error || "Не удалось остановить игру");
+      }
+    } catch (e) {
+      setGameError(e instanceof Error ? e.message : "Не удалось остановить игру");
+    } finally {
+      setGameActionBusy(false);
+      bumpActivity();
+    }
+  }, [previewMode, gameActionBusy, bumpActivity, config]);
+
   const startGame = useCallback(async () => {
-    if (previewMode || gameBusy) return;
+    if (previewMode || gameLaunching || gameActionBusy) return;
     const game = state?.manifest.exhibit?.game;
     if (!game?.title) return;
+    if (gameRunning) {
+      await focusGame();
+      return;
+    }
     setGameError(null);
-    setGamePhase("launching");
-    setGameBusy(true);
+    setGameActionBusy(true);
     bumpActivity();
     try {
       const res = await fetch(`http://127.0.0.1:${config?.healthPort || 47821}/launch-game`, {
@@ -427,14 +478,18 @@ export function App({ preview }: { preview?: KioskPreview } = {}) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({}),
       });
-      const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+      const body = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        error?: string;
+        focused?: boolean;
+      };
       if (res.status === 423) {
         throw new Error(body.error || "Киоск занят, попробуйте позже");
       }
       if (res.status === 404 || res.status === 409) {
-        throw new Error(body.error || "Игра не установлена. Обратитесь к администратору");
+        throw new Error(body.error || "Игра не найдена в C:\\PatriotGame");
       }
-      if (!res.ok && res.status !== 202) {
+      if (!res.ok && res.status !== 202 && !body.focused) {
         throw new Error(body.error || "Не удалось запустить игру");
       }
       if (body.ok === false) {
@@ -442,14 +497,23 @@ export function App({ preview }: { preview?: KioskPreview } = {}) {
       }
     } catch (e) {
       setGameError(e instanceof Error ? e.message : "Не удалось запустить игру");
-      setGameBusy(false);
-      setGamePhase(null);
+    } finally {
+      setGameActionBusy(false);
       bumpActivity();
     }
-  }, [previewMode, gameBusy, bumpActivity, state, config]);
+  }, [
+    previewMode,
+    gameLaunching,
+    gameRunning,
+    gameActionBusy,
+    bumpActivity,
+    state,
+    config,
+    focusGame,
+  ]);
 
   useEffect(() => {
-    if (!config || previewMode || !gameBusy) return;
+    if (!config || previewMode || !state?.manifest.exhibit?.game?.title) return;
     let stopped = false;
     const poll = async () => {
       try {
@@ -458,15 +522,12 @@ export function App({ preview }: { preview?: KioskPreview } = {}) {
         const health = (await hr.json()) as {
           gameCopy?: { status?: string; message?: string | null };
         };
-        const st = String(health.gameCopy?.status || "");
-        if (st) setGamePhase(st);
-        if (st === "idle") {
-          setGameBusy(false);
-          setGamePhase(null);
-        } else if (st === "error") {
+        const st = String(health.gameCopy?.status || "idle");
+        setGameStatus(st);
+        if (st === "error") {
           setGameError(health.gameCopy?.message || "Ошибка игры");
-          setGameBusy(false);
-          setGamePhase(null);
+        } else if (st === "idle") {
+          setGameError(null);
         }
       } catch {
         /* agent restarting */
@@ -478,13 +539,12 @@ export function App({ preview }: { preview?: KioskPreview } = {}) {
       stopped = true;
       window.clearInterval(id);
     };
-  }, [config, previewMode, gameBusy]);
+  }, [config, previewMode, state?.manifest.exhibit?.game?.title]);
 
   const gameButtonLabel = (() => {
-    if (!gameBusy) return state?.manifest.exhibit?.game?.title || "Играть";
-    if (gamePhase === "launching") return "Запуск игры…";
-    if (gamePhase === "running") return "Игра запущена…";
-    return "Подготовка…";
+    if (gameLaunching) return "Запуск игры…";
+    if (gameRunning) return "Вернуться к игре";
+    return state?.manifest.exhibit?.game?.title || "Играть";
   })();
 
   useEffect(() => {
@@ -1242,14 +1302,26 @@ export function App({ preview }: { preview?: KioskPreview } = {}) {
                     Описание и характеристики
                   </button>
                   {exhibit?.game && !previewMode ? (
-                    <button
-                      type="button"
-                      className="btn-ghost btn-ghost--home"
-                      disabled={gameBusy}
-                      onClick={() => void startGame()}
-                    >
-                      {gameButtonLabel}
-                    </button>
+                    <>
+                      <button
+                        type="button"
+                        className="btn-ghost btn-ghost--home"
+                        disabled={gameLaunching || gameActionBusy}
+                        onClick={() => void startGame()}
+                      >
+                        {gameActionBusy && !gameRunning ? "…" : gameButtonLabel}
+                      </button>
+                      {gameRunning ? (
+                        <button
+                          type="button"
+                          className="btn-ghost btn-ghost--home btn-ghost--stop"
+                          disabled={gameActionBusy}
+                          onClick={() => void stopGame()}
+                        >
+                          {gameActionBusy ? "…" : "Стоп"}
+                        </button>
+                      ) : null}
+                    </>
                   ) : exhibit?.game && previewMode ? (
                     <button type="button" className="btn-ghost btn-ghost--home" disabled>
                       {exhibit.game.title || "Играть"}
