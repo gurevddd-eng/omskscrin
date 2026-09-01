@@ -576,9 +576,8 @@ function buildResolveUserPsBlock(cachedUser = "") {
   );
 }
 
-function buildRaiseGameWindowPs() {
+function buildRaiseGameWindowBodyPs() {
   return (
-    "$ErrorActionPreference = 'SilentlyContinue'\n" +
     "Add-Type @\"\n" +
     "using System;\n" +
     "using System.Runtime.InteropServices;\n" +
@@ -612,10 +611,66 @@ function buildRaiseGameWindowPs() {
   );
 }
 
-function ensureRaiseGameHelper() {
-  const helperPath = path.join(omskekranRoot, "_game_raise.ps1");
+function buildRaiseGameWindowPs() {
+  return "$ErrorActionPreference = 'SilentlyContinue'\n" + buildRaiseGameWindowBodyPs();
+}
+
+function buildFocusGameHelperPs() {
+  const gameRootEsc = String(patriotGameRoot).replace(/'/g, "''");
+  return (
+    "$ErrorActionPreference = 'SilentlyContinue'\n" +
+    `$gameRoot = '${gameRootEsc}'\n` +
+    `$windowFile = Join-Path $gameRoot 'window.txt'\n` +
+    "Set-Content -LiteralPath $windowFile -Value '0' -Encoding ASCII -NoNewline\n" +
+    "Set-Content -LiteralPath $windowFile -Value '1' -Encoding ASCII -NoNewline\n" +
+    buildRaiseGameWindowBodyPs()
+  );
+}
+
+function buildStopGameHelperPs() {
+  const gameRootEsc = String(patriotGameRoot).replace(/'/g, "''");
+  const namesPs = patriotGameProcessNames.map((n) => `'${n.replace(/'/g, "''")}'`).join(", ");
+  return (
+    "$ErrorActionPreference = 'SilentlyContinue'\n" +
+    `$gameRoot = '${gameRootEsc}'\n` +
+    `$windowFile = Join-Path $gameRoot 'window.txt'\n` +
+    "Set-Content -LiteralPath $windowFile -Value '0' -Encoding ASCII -NoNewline\n" +
+    `foreach ($n in @(${namesPs})) {\n` +
+    "  Get-Process -Name $n -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue }\n" +
+    "  $exe = $n + '.exe'\n" +
+    "  Start-Process -FilePath 'taskkill.exe' -ArgumentList @('/F','/T','/IM', $exe) -Wait -WindowStyle Hidden -ErrorAction SilentlyContinue | Out-Null\n" +
+    "}\n"
+  );
+}
+
+function isPatriotGameBusy() {
+  if (gameCopy.status === "running" || gameCopy.status === "launching") return true;
+  return testPatriotGameRunningSync();
+}
+
+function readPostBody(req) {
+  return new Promise((resolve) => {
+    let raw = "";
+    req.on("data", (chunk) => {
+      raw += chunk;
+      if (raw.length > 64_000) req.destroy();
+    });
+    req.on("end", () => resolve(raw));
+    req.on("error", () => resolve(""));
+  });
+}
+
+function ensureFocusGameHelper() {
+  const helperPath = path.join(omskekranRoot, "_game_focus.ps1");
   fs.mkdirSync(omskekranRoot, { recursive: true });
-  fs.writeFileSync(helperPath, buildRaiseGameWindowPs(), "utf8");
+  fs.writeFileSync(helperPath, buildFocusGameHelperPs(), "utf8");
+  return helperPath;
+}
+
+function ensureStopGameHelper() {
+  const helperPath = path.join(omskekranRoot, "_game_stop.ps1");
+  fs.mkdirSync(omskekranRoot, { recursive: true });
+  fs.writeFileSync(helperPath, buildStopGameHelperPs(), "utf8");
   return helperPath;
 }
 
@@ -657,24 +712,14 @@ function runInteractivePs1Once(helperPath, taskName) {
 }
 
 async function focusPatriotGame() {
-  const helperPath = ensureRaiseGameHelper();
+  const helperPath = ensureFocusGameHelper();
   await runInteractivePs1Once(helperPath, "StellaKioskGameFocus");
   markGameActive();
 }
 
-function stopPatriotGameSync(reason = "manual") {
-  const gameRootEsc = String(patriotGameRoot).replace(/'/g, "''");
-  const namesPs = patriotGameProcessNames.map((n) => `'${n.replace(/'/g, "''")}'`).join(", ");
-  try {
-    execPowerShell([
-      "-Command",
-      `$windowFile = Join-Path '${gameRootEsc}' 'window.txt'\n` +
-        "Set-Content -LiteralPath $windowFile -Value '0' -Encoding ASCII -NoNewline\n" +
-        `foreach ($n in @(${namesPs})) { Get-Process -Name $n -ErrorAction SilentlyContinue | Stop-Process -Force }\n`,
-    ]);
-  } catch (e) {
-    console.warn("[stella-agent] stop game failed:", e instanceof Error ? e.message : e);
-  }
+async function stopPatriotGame(reason = "manual") {
+  const helperPath = ensureStopGameHelper();
+  await runInteractivePs1Once(helperPath, "StellaKioskGameStop");
   const message =
     reason === "inactivity" ? "Остановлена: нет активности 10 мин" : "Остановлена";
   patchGameCopy({
@@ -756,7 +801,7 @@ async function watchGameInactivity() {
     }
     if (lastGameActivityAt > 0 && Date.now() - lastGameActivityAt >= GAME_INACTIVITY_MS) {
       console.warn("[stella-agent] Patriot game inactive 10m — stopping");
-      stopPatriotGameSync("inactivity");
+      await stopPatriotGame("inactivity");
     }
   } finally {
     gameInactivityBusy = false;
@@ -1242,14 +1287,14 @@ const healthServer = http.createServer(async (req, res) => {
     return;
   }
 
-  // Focus pre-running Patriot game (raise window).
+  // Focus pre-running Patriot game (window.txt=1 + raise window).
   if (req.method === "POST" && url.pathname === "/focus-game") {
-    req.on("end", () => {
+    void readPostBody(req).then(() => {
       if (updateInProgress || isStopRequested()) {
         sendJson(res, 423, { ok: false, error: "Киоск занят, попробуйте позже" });
         return;
       }
-      if (!testPatriotGameRunningSync()) {
+      if (!isPatriotGameBusy()) {
         sendJson(res, 404, { ok: false, error: "Игра не запущена" });
         return;
       }
@@ -1265,19 +1310,25 @@ const healthServer = http.createServer(async (req, res) => {
     return;
   }
 
-  // Stop Patriot game processes.
+  // Stop Patriot game processes (interactive session).
   if (req.method === "POST" && url.pathname === "/stop-game") {
-    req.on("end", () => {
+    void readPostBody(req).then(() => {
       if (updateInProgress || isStopRequested()) {
         sendJson(res, 423, { ok: false, error: "Киоск занят, попробуйте позже" });
         return;
       }
-      if (!testPatriotGameRunningSync() && gameCopy.status === "idle") {
+      if (!isPatriotGameBusy()) {
         sendJson(res, 200, { ok: true, already: true });
         return;
       }
-      stopPatriotGameSync("manual");
-      sendJson(res, 200, { ok: true });
+      void stopPatriotGame("manual")
+        .then(() => sendJson(res, 200, { ok: true }))
+        .catch((e) =>
+          sendJson(res, 500, {
+            ok: false,
+            error: e instanceof Error ? e.message : "Не удалось остановить игру",
+          })
+        );
     });
     return;
   }
@@ -1295,7 +1346,7 @@ const healthServer = http.createServer(async (req, res) => {
         return;
       }
 
-      if (testPatriotGameRunningSync()) {
+      if (isPatriotGameBusy()) {
         void focusPatriotGame()
           .then(() => sendJson(res, 200, { ok: true, focused: true }))
           .catch((e) =>
@@ -1356,7 +1407,7 @@ const healthServer = http.createServer(async (req, res) => {
             "Set-Content -LiteralPath $windowFile -Value '0' -Encoding ASCII -NoNewline\n" +
             "Set-Content -LiteralPath $windowFile -Value '1' -Encoding ASCII -NoNewline\n" +
             "Start-Process -FilePath $exe -WorkingDirectory $gameRoot | Out-Null\n" +
-            buildRaiseGameWindowPs().replace(/^\$ErrorActionPreference = 'SilentlyContinue'\n/, "");
+            buildRaiseGameWindowBodyPs();
           fs.mkdirSync(omskekranRoot, { recursive: true });
           fs.writeFileSync(helperPath, helperBody, "utf8");
 

@@ -453,6 +453,7 @@ export function App({ preview }: { preview?: KioskPreview } = {}) {
       if (!res.ok || body.ok === false) {
         throw new Error(body.error || "Не удалось остановить игру");
       }
+      setGameStatus("idle");
     } catch (e) {
       setGameError(e instanceof Error ? e.message : "Не удалось остановить игру");
     } finally {
