@@ -14,9 +14,9 @@ export function KiosksPage() {
   return (
     <>
       <PageShell
-        section="Парк ПК"
-        title="Киоски"
-        description="Парк Windows-ПК зала: установка софта с Debian-сервера, конфиг, lockdown и экспонаты."
+      section="Киоски"
+      title="Управление"
+      description="Установка, OTA, старт UI, экспонаты и проверка игры на киосках."
         wide
         actions={
           <div className="kx-page-actions">

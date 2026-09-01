@@ -1,102 +1,23 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import { Link } from "react-router-dom";
 import type { KioskDto } from "@stella/shared";
 import { PROBE_STATUS_LABEL } from "@stella/shared";
-import { useAuth } from "../auth";
 import { api } from "../api";
 import type { DeployStatus } from "../components/kiosk/DeployStatusPanel";
+import { MonitorStream } from "../components/monitoring/MonitorStream";
 import { PageShell } from "../components/ui/PageShell";
 import { Alert } from "../components/ui/Alert";
 import { Card } from "../components/ui/Card";
 import { Stat, StatGrid } from "../components/ui/StatGrid";
 
-type QuickTile = {
-  to: string;
-  title: string;
-  desc: string;
-  icon: string;
-  tone: "monitor" | "fleet" | "content" | "ads" | "system" | "users" | "timeline";
-  adminOnly?: boolean;
-};
-
-type QuickGroup = {
-  title: string;
-  tiles: QuickTile[];
-};
-
-const QUICK_GROUPS: QuickGroup[] = [
-  {
-    title: "Парк и мониторинг",
-    tiles: [
-      {
-        to: "/monitor",
-        title: "Мониторинг",
-        desc: "Live-статусы и SSE-поток всех ПК",
-        icon: "M",
-        tone: "monitor",
-      },
-      {
-        to: "/kiosks",
-        title: "Киоски",
-        desc: "Установка, OTA, старт UI, конфиг",
-        icon: "K",
-        tone: "fleet",
-      },
-    ],
-  },
-  {
-    title: "Контент",
-    tiles: [
-      {
-        to: "/exhibits",
-        title: "Экспонаты",
-        desc: "Тексты, фото, видео, ТТХ",
-        icon: "E",
-        tone: "content",
-      },
-      {
-        to: "/timeline",
-        title: "Хроника",
-        desc: "Общие страницы лет для всех киосков",
-        icon: "H",
-        tone: "timeline",
-      },
-      {
-        to: "/ads",
-        title: "Реклама",
-        desc: "Баннеры на правом крыле",
-        icon: "A",
-        tone: "ads",
-      },
-    ],
-  },
-  {
-    title: "Система",
-    tiles: [
-      {
-        to: "/settings",
-        title: "Настройки",
-        desc: "Тема, lockdown, сеть, Windows",
-        icon: "S",
-        tone: "system",
-      },
-      {
-        to: "/users",
-        title: "Пользователи",
-        desc: "Учётные записи и роли",
-        icon: "U",
-        tone: "users",
-        adminOnly: true,
-      },
-    ],
-  },
-];
-
-function kioskProblemReason(k: KioskDto): string | null {
+function kioskAttentionReason(k: KioskDto): string | null {
+  if (!k.online) return "нет связи";
   if (k.installStatus === "error") return "ошибка установки";
   if (k.probeStatus === "unreachable") return "недоступен";
   if (k.probeStatus === "no_software") return "нет софта";
-  if (k.syncStatus === "error") return "ошибка синхронизации";
+  if (k.syncStatus === "error") return "ошибка контента";
+  if (k.gameCopy?.status === "error") return k.gameCopy.message || "ошибка игры";
+  if (k.otaPending) return "обновляется ПО";
   return null;
 }
 
@@ -115,7 +36,6 @@ function formatSeen(iso: string | null) {
 }
 
 export function DashboardPage() {
-  const { user, isAdmin } = useAuth();
   const [kiosks, setKiosks] = useState<KioskDto[]>([]);
   const [exhibitCount, setExhibitCount] = useState(0);
   const [adCount, setAdCount] = useState(0);
@@ -124,260 +44,148 @@ export function DashboardPage() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    let cancelled = false;
+  const load = useCallback(async () => {
     setLoading(true);
-    Promise.all([
-      api<KioskDto[]>("/api/kiosks"),
-      api<{ id: string }[]>("/api/exhibits?fields=id,title"),
-      api<{ ads: { id: string }[] }>("/api/ads"),
-      api<{ pages: { id: string }[] }>("/api/timeline"),
-      api<DeployStatus>("/api/kiosks/deploy/status"),
-    ])
-      .then(([ks, exhibits, ads, timeline, dep]) => {
-        if (cancelled) return;
-        setKiosks(ks);
-        setExhibitCount(exhibits.length);
-        setAdCount(ads.ads?.length ?? 0);
-        setTimelineCount(timeline.pages?.length ?? 0);
-        setDeploy(dep);
-      })
-      .catch((e) => {
-        if (!cancelled) setError(e instanceof Error ? e.message : "Ошибка загрузки");
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
+    setError("");
+    try {
+      const [ks, exhibits, ads, timeline, dep] = await Promise.all([
+        api<KioskDto[]>("/api/kiosks"),
+        api<{ id: string }[]>("/api/exhibits?fields=id,title"),
+        api<{ ads: { id: string }[] }>("/api/ads"),
+        api<{ pages: { id: string }[] }>("/api/timeline"),
+        api<DeployStatus>("/api/kiosks/deploy/status"),
+      ]);
+      setKiosks(ks);
+      setExhibitCount(exhibits.length);
+      setAdCount(ads.ads?.length ?? 0);
+      setTimelineCount(timeline.pages?.length ?? 0);
+      setDeploy(dep);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Ошибка загрузки");
+    } finally {
+      setLoading(false);
+    }
   }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
 
   const fleet = useMemo(() => {
     const online = kiosks.filter((k) => k.online).length;
-    const offline = kiosks.length - online;
-    const healthy = kiosks.filter((k) => k.probeStatus === "healthy").length;
-    const problems = kiosks.filter((k) => kioskProblemReason(k)).length;
-    const busy = kiosks.filter(
-      (k) =>
-        k.installStatus === "running" ||
-        k.installStatus === "queued" ||
-        k.uiStartStatus === "running" ||
-        k.uiStopStatus === "running" ||
-        k.policyClearStatus === "running" ||
-        k.otaPending
-    ).length;
+    const attention = kiosks
+      .map((k) => ({ k, reason: kioskAttentionReason(k) }))
+      .filter((x): x is { k: KioskDto; reason: string } => Boolean(x.reason))
+      .slice(0, 10);
     const target = deploy?.softwareVersion || null;
     const otaOutdated = kiosks.filter((k) => {
       const local = k.softwareVersion;
       const tgt = k.otaTarget || target;
       return Boolean(tgt && local && local !== tgt);
     }).length;
-    const otaPending = kiosks.filter((k) => k.otaPending).length;
-    const problemRows = kiosks
-      .map((k) => ({ k, reason: kioskProblemReason(k) }))
-      .filter((x): x is { k: KioskDto; reason: string } => Boolean(x.reason))
-      .slice(0, 8);
-    const staleHeartbeat = kiosks
-      .filter((k) => !k.online)
-      .sort((a, b) => (b.lastSeenAt || "").localeCompare(a.lastSeenAt || ""))
-      .slice(0, 6);
     return {
       online,
-      offline,
-      healthy,
-      problems,
-      busy,
-      otaOutdated,
-      otaPending,
-      problemRows,
-      staleHeartbeat,
+      offline: kiosks.length - online,
+      attention,
       total: kiosks.length,
+      otaOutdated,
       target,
+      packageReady: deploy?.packageReady ?? false,
     };
   }, [kiosks, deploy]);
 
-  const groups = useMemo(
-    () =>
-      QUICK_GROUPS.map((group) => ({
-        ...group,
-        tiles: group.tiles.filter((tile) => !tile.adminOnly || isAdmin),
-      })).filter((group) => group.tiles.length),
-    [isAdmin]
-  );
-
   return (
     <PageShell
-      section="Доступ"
-      title={`Обзор${user?.login ? ` · ${user.login}` : ""}`}
-      description="Сводка по парку киосков, контенту и пакету ПО — отсюда быстрый переход к разделам."
+      section="Обзор"
+      title="Парк и контент"
+      description="Состояние киосков в реальном времени, проблемы и сводка по контенту."
       wide
       actions={
-        <button
-          type="button"
-          className="btn ghost"
-          disabled={loading}
-          onClick={() => window.location.reload()}
-        >
+        <button type="button" className="btn ghost" disabled={loading} onClick={() => void load()}>
           {loading ? "…" : "Обновить"}
         </button>
       }
     >
       {error ? <Alert tone="error">{error}</Alert> : null}
 
-      {fleet.problems > 0 ? (
-        <Alert tone="error">
-          Требуют внимания {fleet.problems} из {fleet.total || "—"} киосков.{" "}
-          <Link to="/kiosks">Открыть парк ПК →</Link>
+      {fleet.attention.length > 0 ? (
+        <Alert tone="info">
+          Требуют внимания: {fleet.attention.length}.{" "}
+          <Link to="/kiosks">Открыть киоски →</Link>
         </Alert>
+      ) : fleet.total > 0 ? (
+        <Alert tone="success">Все киоски в норме.</Alert>
       ) : null}
 
-      <section className="cx-dash-block" aria-label="Парк киосков">
-        <h2 className="cx-dash-block__title">Парк киосков</h2>
+      <section className="cx-dash-block" aria-label="Сводка">
         <StatGrid columns={5}>
-          <Stat label="Всего" value={fleet.total} />
+          <Stat label="Киосков" value={fleet.total} />
           <Stat label="Онлайн" value={fleet.online} tone="ok" />
-          <Stat label="Офлайн" value={fleet.offline} tone={fleet.offline ? "warn" : "default"} />
-          <Stat label="Healthy" value={fleet.healthy} tone="ok" />
           <Stat
-            label="Проблемы"
-            value={fleet.problems}
-            tone={fleet.problems ? "bad" : "default"}
+            label="Офлайн"
+            value={fleet.offline}
+            tone={fleet.offline ? "warn" : "default"}
           />
-        </StatGrid>
-      </section>
-
-      <section className="cx-dash-block" aria-label="ПО и операции">
-        <h2 className="cx-dash-block__title">ПО и операции</h2>
-        <StatGrid columns={4}>
+          <Stat label="Экспонатов" value={exhibitCount} />
           <Stat
             label="OTA отстаёт"
             value={fleet.otaOutdated}
             tone={fleet.otaOutdated ? "warn" : "default"}
           />
-          <Stat
-            label="OTA в процессе"
-            value={fleet.otaPending}
-            tone={fleet.otaPending ? "warn" : "default"}
-          />
-          <Stat
-            label="Активных задач"
-            value={fleet.busy}
-            tone={fleet.busy ? "warn" : "default"}
-          />
-          <Stat
-            label="Пакет на сервере"
-            value={deploy?.packageReady ? deploy.softwareVersion || "есть" : "нет"}
-            tone={deploy?.packageReady ? "ok" : "bad"}
-          />
         </StatGrid>
         {fleet.target ? (
           <p className="cx-dash-note muted">
-            Целевая версия ПО: <code>{fleet.target}</code>
-            {deploy?.serverPublicUrl ? (
-              <>
-                {" "}
-                · сервер <code>{deploy.serverPublicUrl}</code>
-              </>
-            ) : null}
+            Пакет ПО:{" "}
+            <code>{fleet.packageReady ? fleet.target : "не собран"}</code>
+            {" · "}
+            <Link to="/system/settings">настройки</Link>
+            {" · "}
+            <Link to="/kiosks">управление киосками</Link>
           </p>
         ) : null}
       </section>
 
-      <section className="cx-dash-block" aria-label="Контент">
-        <h2 className="cx-dash-block__title">Контент</h2>
-        <StatGrid columns={3}>
-          <Stat label="Экспонаты" value={exhibitCount} />
-          <Stat label="Страницы хроники" value={timelineCount} />
-          <Stat label="Рекламные баннеры" value={adCount} />
-        </StatGrid>
-      </section>
-
-      <div className="cx-dash-split">
-        <Card
-          title="Отчёт · проблемы"
-          padding="none"
-          className="cx-dash-report"
-        >
-          {fleet.problemRows.length ? (
-            <ul className="cx-dash-list">
-              {fleet.problemRows.map(({ k, reason }) => (
-                <li key={k.id}>
-                  <Link to={`/kiosks?id=${encodeURIComponent(k.id)}`} className="cx-dash-list__row">
-                    <span className="cx-dash-list__main">
-                      <strong>{k.name}</strong>
-                      <span className="muted mono">{k.hostname}</span>
-                    </span>
-                    <span className="cx-dash-list__meta">
-                      <span className="badge offline">{reason}</span>
-                      <span className="muted">{PROBE_STATUS_LABEL[k.probeStatus]}</span>
-                    </span>
-                  </Link>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p className="cx-dash-empty muted">Критических проблем по парку нет.</p>
-          )}
-          <div className="cx-dash-list__foot">
-            <Link to="/kiosks">Все киоски →</Link>
-            <Link to="/monitor">Мониторинг →</Link>
-          </div>
-        </Card>
-
-        <Card title="Отчёт · офлайн" padding="none" className="cx-dash-report">
-          {fleet.staleHeartbeat.length ? (
-            <ul className="cx-dash-list">
-              {fleet.staleHeartbeat.map((k) => (
-                <li key={k.id}>
-                  <Link to={`/kiosks?id=${encodeURIComponent(k.id)}`} className="cx-dash-list__row">
-                    <span className="cx-dash-list__main">
-                      <strong>{k.name}</strong>
-                      <span className="muted mono">{k.hostname}</span>
-                    </span>
-                    <span className="cx-dash-list__meta">
-                      <span className="muted">heartbeat {formatSeen(k.lastSeenAt)}</span>
-                    </span>
-                  </Link>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p className="cx-dash-empty muted">Все киоски онлайн или список пуст.</p>
-          )}
-          <div className="cx-dash-list__foot">
-            <Link to="/kiosks">Парк ПК →</Link>
-          </div>
-        </Card>
-      </div>
-
-      <div className="cx-quick">
-        {groups.map((group) => (
-          <section key={group.title} className="cx-quick__group">
-            <h2 className="cx-quick__heading">{group.title}</h2>
-            <div className="cx-quick__grid">
-              {group.tiles.map((tile) => (
-                <Link
-                  key={tile.to}
-                  to={tile.to}
-                  className={`cx-quick-tile cx-quick-tile--${tile.tone}`}
-                >
-                  <span className="cx-quick-tile__icon" aria-hidden>
-                    {tile.icon}
+      {fleet.attention.length > 0 ? (
+        <Card title="Требуют внимания" padding="none" className="cx-dash-report">
+          <ul className="cx-dash-list">
+            {fleet.attention.map(({ k, reason }) => (
+              <li key={k.id}>
+                <Link to={`/kiosks?id=${encodeURIComponent(k.id)}`} className="cx-dash-list__row">
+                  <span className="cx-dash-list__main">
+                    <strong>{k.name}</strong>
+                    <span className="muted mono">{k.hostname}</span>
                   </span>
-                  <span className="cx-quick-tile__body">
-                    <span className="cx-quick-tile__title">{tile.title}</span>
-                    <span className="cx-quick-tile__desc">{tile.desc}</span>
-                  </span>
-                  <span className="cx-quick-tile__arrow" aria-hidden>
-                    →
+                  <span className="cx-dash-list__meta">
+                    <span className={`badge ${k.online ? "online" : "offline"}`}>{reason}</span>
+                    <span className="muted">{PROBE_STATUS_LABEL[k.probeStatus]}</span>
+                    <span className="muted">{formatSeen(k.lastSeenAt)}</span>
                   </span>
                 </Link>
-              ))}
-            </div>
-          </section>
-        ))}
-      </div>
+              </li>
+            ))}
+          </ul>
+        </Card>
+      ) : null}
+
+      <MonitorStream />
+
+      <section className="cx-dash-block" aria-label="Контент">
+        <h2 className="cx-dash-block__title">Контент</h2>
+        <div className="cx-dash-content-links">
+          <Link to="/content/exhibits" className="cx-dash-content-link">
+            <strong>{exhibitCount}</strong>
+            <span>экспонатов</span>
+          </Link>
+          <Link to="/content/timeline" className="cx-dash-content-link">
+            <strong>{timelineCount}</strong>
+            <span>страниц хроники</span>
+          </Link>
+          <Link to="/content/ads" className="cx-dash-content-link">
+            <strong>{adCount}</strong>
+            <span>баннеров</span>
+          </Link>
+        </div>
+      </section>
     </PageShell>
   );
 }

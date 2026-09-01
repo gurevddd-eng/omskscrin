@@ -15,12 +15,12 @@ export function ExhibitPreviewPage() {
     );
   }
   if (!user) return <Navigate to="/login" replace />;
-  if (!id) return <Navigate to="/exhibits" replace />;
+  if (!id) return <Navigate to="/content/exhibits" replace />;
 
   return (
     <div className="kiosk-preview-shell">
       <header className="kiosk-preview-shell__bar">
-        <button type="button" className="btn secondary" onClick={() => navigate("/exhibits")}>
+        <button type="button" className="btn secondary" onClick={() => navigate("/content/exhibits")}>
           Закрыть
         </button>
         <p className="kiosk-preview-shell__note">

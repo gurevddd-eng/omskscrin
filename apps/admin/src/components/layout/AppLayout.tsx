@@ -1,12 +1,32 @@
-import { useEffect, useState } from "react";
-import { NavLink, Outlet, Navigate, useLocation } from "react-router-dom";
+import { useEffect, useState, useCallback } from "react";
+import { NavLink, Outlet, Navigate, useLocation, Link } from "react-router-dom";
+import type { KioskDto } from "@stella/shared";
 import { useAuth } from "../../auth";
+import { api } from "../../api";
 import { PRIMARY_NAV, getPageMeta, navIsActive } from "./nav";
 
 export function AppLayout() {
-  const { user, loading, logout, isAdmin } = useAuth();
+  const { user, loading, logout } = useAuth();
   const location = useLocation();
   const [mobileNav, setMobileNav] = useState(false);
+  const [fleetOnline, setFleetOnline] = useState<{ online: number; total: number } | null>(null);
+
+  const refreshFleet = useCallback(() => {
+    api<KioskDto[]>("/api/kiosks")
+      .then((ks) => {
+        setFleetOnline({
+          online: ks.filter((k) => k.online).length,
+          total: ks.length,
+        });
+      })
+      .catch(() => setFleetOnline(null));
+  }, []);
+
+  useEffect(() => {
+    refreshFleet();
+    const id = window.setInterval(refreshFleet, 30_000);
+    return () => window.clearInterval(id);
+  }, [refreshFleet]);
 
   useEffect(() => {
     setMobileNav(false);
@@ -32,7 +52,6 @@ export function AppLayout() {
   if (!user) return <Navigate to="/login" replace />;
 
   const meta = getPageMeta(location.pathname);
-  const links = PRIMARY_NAV.filter((item) => !item.adminOnly || isAdmin);
 
   return (
     <div className="cx-app">
@@ -53,7 +72,7 @@ export function AppLayout() {
 
           <nav className={`cx-nav${mobileNav ? " is-open" : ""}`} aria-label="Разделы админки">
             <div className="cx-nav__rail">
-              {links.map((item) => {
+              {PRIMARY_NAV.map((item) => {
                 const active = navIsActive(location.pathname, item.to, item.end);
                 return (
                   <NavLink
@@ -74,7 +93,6 @@ export function AppLayout() {
                 <span className="cx-user-chip__avatar">{user.login.slice(0, 1).toUpperCase()}</span>
                 <span className="cx-user-chip__meta">
                   <strong>{user.login}</strong>
-                  <small>{user.role}</small>
                 </span>
               </div>
               <button type="button" className="btn ghost cx-user-chip__out" onClick={logout}>
@@ -84,6 +102,13 @@ export function AppLayout() {
           </nav>
 
           <div className="cx-header__trail">
+            {fleetOnline && fleetOnline.total > 0 ? (
+              <Link to="/kiosks" className="cx-fleet-pill" title="Киоски онлайн">
+                <span className={`cx-fleet-pill__dot${fleetOnline.online < fleetOnline.total ? " is-warn" : ""}`} />
+                {fleetOnline.online}/{fleetOnline.total} онлайн
+              </Link>
+            ) : null}
+
             <div className="cx-header__user">
               <div className="cx-user-chip">
                 <span className="cx-user-chip__avatar" aria-hidden>
@@ -91,7 +116,6 @@ export function AppLayout() {
                 </span>
                 <span className="cx-user-chip__meta">
                   <strong>{user.login}</strong>
-                  <small>{user.role}</small>
                 </span>
               </div>
               <button type="button" className="btn ghost cx-user-chip__out" onClick={logout}>

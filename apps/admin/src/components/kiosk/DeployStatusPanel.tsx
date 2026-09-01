@@ -148,7 +148,7 @@ export function DeployStatusPanel({ deploy, onRefresh, refreshing, fleet }: Prop
       hint: deploy.deployCredentialsConfigured
         ? `домен · ${deploy.domainSuffix || "udhb.local"}`
         : "Настройки → Windows",
-      href: !deploy.deployCredentialsConfigured ? "/settings" : undefined,
+      href: !deploy.deployCredentialsConfigured ? "/system/settings" : undefined,
     },
     {
       key: "transport",
@@ -298,7 +298,7 @@ export function DeployStatusPanel({ deploy, onRefresh, refreshing, fleet }: Prop
               ? "Скачивание…"
               : `OTA update.zip${deploy.updateZipSize ? ` · ${deploy.updateZipSize}` : ""}`}
           </button>
-          <Link className="btn ghost" to="/settings">
+          <Link className="btn ghost" to="/system/settings">
             Настройки доступа
           </Link>
           {fleet && fleet.total > 0 ? (
@@ -411,7 +411,7 @@ export function DeployStatusPanel({ deploy, onRefresh, refreshing, fleet }: Prop
                       <strong>{p.label}</strong>
                       {p.hint ? <span>{p.hint}</span> : null}
                       {!p.ok && (p.id === "creds" || p.id === "serverUrl") ? (
-                        <Link to="/settings">Открыть настройки</Link>
+                        <Link to="/system/settings">Открыть настройки</Link>
                       ) : null}
                     </div>
                   </li>

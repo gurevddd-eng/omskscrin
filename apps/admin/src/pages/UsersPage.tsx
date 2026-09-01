@@ -1,17 +1,12 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
-import type { AuthUser, Role } from "@stella/shared";
-import { Navigate } from "react-router-dom";
+import type { AuthUser } from "@stella/shared";
 import { useAuth } from "../auth";
 import { api } from "../api";
 import { PageShell } from "../components/ui/PageShell";
 import { Alert } from "../components/ui/Alert";
 import { useConfirm } from "../components/ui/confirm";
 
-const ROLE_HINT: Record<Role, string> = {
-  admin: "Полный доступ",
-  editor: "Контент и киоски",
-  viewer: "Только просмотр",
-};
+const ROLE_LABEL = "администратор";
 
 function initials(login: string) {
   const clean = login.trim();
@@ -22,12 +17,11 @@ function initials(login: string) {
 }
 
 export function UsersPage() {
-  const { isAdmin, isSuperAdmin, user: me } = useAuth();
+  const { isSuperAdmin, user: me } = useAuth();
   const confirmDialog = useConfirm();
   const [users, setUsers] = useState<AuthUser[]>([]);
   const [login, setLogin] = useState("");
   const [password, setPassword] = useState("");
-  const [role, setRole] = useState<Role>("editor");
   const [error, setError] = useState("");
   const [savedHint, setSavedHint] = useState("");
   const [passwordEditId, setPasswordEditId] = useState<string | null>(null);
@@ -55,11 +49,8 @@ export function UsersPage() {
   }
 
   useEffect(() => {
-    if (!isAdmin) return;
     load().catch((e) => setError(e.message));
-  }, [isAdmin]);
-
-  if (!isAdmin) return <Navigate to="/" replace />;
+  }, []);
 
   async function onCreate(e: FormEvent) {
     e.preventDefault();
@@ -67,27 +58,15 @@ export function UsersPage() {
     setError("");
     setSavedHint("");
     try {
-      await api("/api/users", { method: "POST", json: { login, password, role } });
+      await api("/api/users", { method: "POST", json: { login, password, role: "admin" } });
       setLogin("");
       setPassword("");
-      setRole("editor");
       setSavedHint("Пользователь создан");
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Ошибка");
     } finally {
       setCreateBusy(false);
-    }
-  }
-
-  async function setUserRole(id: string, next: Role) {
-    setError("");
-    try {
-      await api(`/api/users/${id}`, { method: "PATCH", json: { role: next } });
-      setSavedHint("Роль обновлена");
-      await load();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Не удалось сменить роль");
     }
   }
 
@@ -233,14 +212,7 @@ export function UsersPage() {
               autoComplete="new-password"
             />
           </label>
-          <label>
-            Роль
-            <select value={role} onChange={(e) => setRole(e.target.value as Role)}>
-              <option value="admin">admin — {ROLE_HINT.admin}</option>
-              <option value="editor">editor — {ROLE_HINT.editor}</option>
-              <option value="viewer">viewer — {ROLE_HINT.viewer}</option>
-            </select>
-          </label>
+          <p className="field-hint">Новые учётные записи получают полный доступ к админке.</p>
           <button className="btn" disabled={createBusy}>
             {createBusy ? "Создание…" : "Создать"}
           </button>
@@ -275,23 +247,12 @@ export function UsersPage() {
                         {u.active ? "активен" : "отключён"}
                       </span>
                       {u.superAdmin ? <span className="badge ok">супер-админ</span> : null}
-                      <span className={`user-card__role user-card__role--${u.role}`}>{u.role}</span>
+                      <span className={`user-card__role user-card__role--${u.role}`}>
+                        {u.role === "admin" ? ROLE_LABEL : u.role}
+                      </span>
                     </div>
                   </div>
                 </header>
-
-                <label className="user-card__role-field">
-                  <span>Роль</span>
-                  <select
-                    value={u.role}
-                    disabled={u.superAdmin}
-                    onChange={(e) => void setUserRole(u.id, e.target.value as Role)}
-                  >
-                    <option value="admin">admin — {ROLE_HINT.admin}</option>
-                    <option value="editor">editor — {ROLE_HINT.editor}</option>
-                    <option value="viewer">viewer — {ROLE_HINT.viewer}</option>
-                  </select>
-                </label>
 
                 <div className="user-card__actions">
                   {isSuperAdmin ? (
