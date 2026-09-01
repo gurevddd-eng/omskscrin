@@ -1,4 +1,5 @@
 import dns from "node:dns/promises";
+import { exhibitGameFromRow } from "@stella/shared";
 import { prisma } from "./prisma.js";
 import { config } from "./config.js";
 import { getDeployMeta } from "./deployMeta.js";
@@ -57,17 +58,7 @@ export function mapKiosk(k: {
   const otaPending = Boolean(
     pending && metaTarget && pending.target === metaTarget && local !== metaTarget
   );
-  const shareFolder = String(k.exhibit?.gameShareFolder || "").trim();
-  const gameExe = String(k.exhibit?.gameExe || "").trim();
-  const gameTitle = String(k.exhibit?.gameTitle || "").trim();
-  const exhibitGame =
-    shareFolder && gameExe
-      ? {
-          title: gameTitle || shareFolder,
-          shareFolder,
-          exe: gameExe,
-        }
-      : null;
+  const exhibitGame = k.exhibit ? exhibitGameFromRow(k.exhibit) : null;
   return {
     id: k.id,
     kioskId: k.kioskId,

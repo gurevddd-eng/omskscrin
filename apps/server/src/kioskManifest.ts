@@ -1,4 +1,4 @@
-import type { ExhibitGame, KioskManifest } from "@stella/shared";
+import { exhibitGameFromRow, type KioskManifest } from "@stella/shared";
 import { toFileDto } from "./routes/files.js";
 import { parseSpecs } from "./routes/exhibits.js";
 import { getGlobalAdsState } from "./routes/ads.js";
@@ -38,21 +38,6 @@ export type ExhibitForManifest = {
   video: MediaFileRow | null;
   audio: MediaFileRow | null;
 };
-
-export function exhibitGameFromRow(e: {
-  gameTitle: string;
-  gameShareFolder: string;
-  gameExe: string;
-}): ExhibitGame | null {
-  const shareFolder = String(e.gameShareFolder || "").trim();
-  const exe = String(e.gameExe || "").trim();
-  if (!shareFolder || !exe) return null;
-  return {
-    title: String(e.gameTitle || "").trim() || "Играть",
-    shareFolder,
-    exe,
-  };
-}
 
 export async function buildKioskManifest(opts: {
   kioskId: string;

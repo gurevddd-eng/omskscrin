@@ -171,7 +171,7 @@ export function ExhibitsPage() {
       withGallery: source.filter((e) => e.galleryIds.length > 0).length,
       withVideo: source.filter((e) => Boolean(e.videoId)).length,
       withAudio: source.filter((e) => Boolean(e.audioId)).length,
-      withGame: source.filter((e) => Boolean(e.gameShareFolder && e.gameExe)).length,
+      withGame: source.filter((e) => Boolean(e.gameTitle?.trim())).length,
     };
   }, [filtered]);
 
@@ -569,8 +569,8 @@ export function ExhibitsPage() {
                   <span className={`badge ${specsPreview.length ? "ok" : "offline"}`}>
                     ТТХ · {specsPreview.length}
                   </span>
-                  <span className={`badge ${form.gameShareFolder && form.gameExe ? "ok" : "offline"}`}>
-                    {form.gameShareFolder && form.gameExe ? "Игра настроена" : "Без игры"}
+                  <span className={`badge ${form.gameTitle?.trim() ? "ok" : "offline"}`}>
+                    {form.gameTitle?.trim() ? "Игра настроена" : "Без игры"}
                   </span>
                 </div>
               </div>
@@ -707,13 +707,12 @@ export function ExhibitsPage() {
               </fieldset>
             </Card>
 
-            <Card title="Игра на киоске" subtitle="Папка на UNC-шаре и .exe для запуска">
+            <Card title="Игра на киоске" subtitle="Кнопка «Играть» и проверка C:\PatriotGame">
               <fieldset disabled={!canEdit} className="exhibit-editor__fields exhibit-editor__game">
                 <p className="field-hint">
-                  Корень шары: <code>{gameShare?.unc || "—"}</code>
-                  {" · "}
-                  меняется в Настройки → Поведение → Шара с играми.
-                  Киоск копирует папку в <code>C:\ProgramData\omskekran\games</code>.
+                  Игра предустановлена на киоске в <code>C:\PatriotGame</code> (
+                  <code>game.exe</code>, <code>window.txt</code>). Stella с шары ничего не копирует —
+                  укажите только подпись кнопки.
                 </p>
                 <label>
                   Подпись кнопки
@@ -802,7 +801,7 @@ export function ExhibitsPage() {
                     <input
                       value={form.gameExe}
                       onChange={(e) => patchForm({ gameExe: e.target.value })}
-                      placeholder="Game.exe или subdir\Game.exe"
+                      placeholder="game.exe"
                       disabled={!form.gameShareFolder}
                       spellCheck={false}
                     />
@@ -911,7 +910,7 @@ export function ExhibitsPage() {
       {filtered.length ? (
         <section className="exhibits-catalog" aria-label="Список экспонатов">
           {filtered.map((e) => {
-            const hasGame = Boolean(e.gameShareFolder && e.gameExe);
+            const hasGame = Boolean(e.gameTitle?.trim());
             const mediaBits = [
               e.galleryIds.length ? `Галерея ${e.galleryIds.length}` : null,
               e.videoId ? "Видео" : null,

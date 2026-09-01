@@ -416,7 +416,7 @@ export function App({ preview }: { preview?: KioskPreview } = {}) {
   const startGame = useCallback(async () => {
     if (previewMode || gameBusy) return;
     const game = state?.manifest.exhibit?.game;
-    if (!game?.exe || !game.shareFolder) return;
+    if (!game?.title) return;
     setGameError(null);
     setGamePhase("launching");
     setGameBusy(true);
@@ -425,7 +425,7 @@ export function App({ preview }: { preview?: KioskPreview } = {}) {
       const res = await fetch(`http://127.0.0.1:${config?.healthPort || 47821}/launch-game`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ folder: game.shareFolder, exe: game.exe }),
+        body: JSON.stringify({}),
       });
       const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
       if (res.status === 423) {

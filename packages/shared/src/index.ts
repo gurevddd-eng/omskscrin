@@ -209,6 +209,21 @@ export interface ExhibitGame {
   exe: string;
 }
 
+/** Kiosk play button — game is pre-installed at C:\\PatriotGame (no UNC copy). */
+export function exhibitGameFromRow(e: {
+  gameTitle?: string | null;
+  gameShareFolder?: string | null;
+  gameExe?: string | null;
+}): ExhibitGame | null {
+  const title = String(e.gameTitle || "").trim();
+  if (!title) return null;
+  return {
+    title,
+    shareFolder: "PatriotGame",
+    exe: DEFAULT_PATRIOT_GAME_EXE,
+  };
+}
+
 export interface GameShareFolder {
   name: string;
   exes: string[];
@@ -248,6 +263,12 @@ export const GAME_COPY_STATUS_STEPS: { id: GameCopyStatus; label: string }[] = [
 ];
 
 export const DEFAULT_GAME_SHARE_UNC = "\\\\HYDRALISK3\\Patriot\\Игры парк победы";
+
+/** Fixed local path where the kiosk agent installs and launches Patriot UE games. */
+export const KIOSK_PATRIOT_GAME_ROOT = "C:\\PatriotGame";
+
+/** Launcher written to window.txt=1 before start (Stelarium watchdog). */
+export const DEFAULT_PATRIOT_GAME_EXE = "game.exe";
 
 /** Normalize Windows/UNC path separators and trailing slashes. */
 export function normalizeUncPath(raw: string | null | undefined): string {
@@ -362,9 +383,9 @@ export interface KioskDto {
   uiStopStatus: UiStopStatus;
   uiStopStage: UiStopStage;
   uiStopMessage: string | null;
-  /** Live robocopy / launch of exhibit game from the kiosk agent. */
+  /** Live game launch / verify on kiosk (C:\\PatriotGame). */
   gameCopy?: GameCopyDto | null;
-  /** Local game folders already present under ProgramData\\omskekran\\games */
+  /** Local Patriot game install present (C:\\PatriotGame). */
   installedGames?: string[] | null;
   /** Bound exhibit game config (for admin install button). */
   exhibitGame?: {

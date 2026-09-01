@@ -196,30 +196,15 @@ export function KioskDetail(props: KioskDetailProps) {
                   }
                   title={
                     !exhibitGame
-                      ? "В экспонате не заданы папка и exe игры"
+                      ? "В экспонате не задана подпись кнопки игры"
                       : gameInstalled
-                        ? `Синхронизировать «${exhibitGame.title}» с шары`
-                        : `Скопировать «${exhibitGame.title}» на киоск`
+                        ? `Проверить «${exhibitGame.title}» в C:\\PatriotGame`
+                        : `Проверить «${exhibitGame.title}» в C:\\PatriotGame`
                   }
                   onClick={() => props.onInstallGame(k.id)}
                 >
-                  {props.installingGame || k.gameCopy?.status === "copying"
-                    ? "Игра…"
-                    : gameInstalled
-                      ? "Обновить игру"
-                      : "Установить игру"}
+                  {props.installingGame ? "Проверка…" : gameInstalled ? "Проверить игру" : "Проверить игру"}
                 </button>
-                {gameInstalled || (k.installedGames && k.installedGames.length > 0) ? (
-                  <button
-                    type="button"
-                    className="btn ghost"
-                    disabled={locked || !exhibitGame}
-                    title="Удалить локальную копию игры с киоска"
-                    onClick={() => props.onUninstallGame(k.id)}
-                  >
-                    {props.uninstallingGame ? "…" : "Удалить игру"}
-                  </button>
-                ) : null}
               </>
             )}
             <button

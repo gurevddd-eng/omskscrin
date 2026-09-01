@@ -228,19 +228,10 @@ let gameCopy = {
 
 function listInstalledGames() {
   try {
-    if (!fs.existsSync(gamesRoot)) return [];
-    return fs
-      .readdirSync(gamesRoot, { withFileTypes: true })
-      .filter((d) => d.isDirectory() && !d.name.startsWith("."))
-      .filter((d) => {
-        try {
-          return fs.readdirSync(path.join(gamesRoot, d.name)).length > 0;
-        } catch {
-          return false;
-        }
-      })
-      .map((d) => d.name)
-      .slice(0, 80);
+    if (!fs.existsSync(patriotGameRoot)) return [];
+    const entries = fs.readdirSync(patriotGameRoot);
+    if (!entries.length) return [];
+    return ["PatriotGame"];
   } catch {
     return [];
   }
@@ -447,7 +438,25 @@ function gameContentLooksOk(localFolder) {
 
 const omskekranRoot = path.join(process.env.ProgramData || "C:\\ProgramData", "omskekran");
 const contentRoot = path.join(omskekranRoot, "content");
-const gamesRoot = path.join(omskekranRoot, "games");
+/** Fixed local install + launch root for Patriot games (matches Stelarium / wpfcontrol). */
+const patriotGameRoot = process.env.STELLA_PATRIOT_GAME_ROOT || "C:\\PatriotGame";
+const defaultGameLauncherExe = process.env.STELLA_PATRIOT_GAME_EXE || "game.exe";
+const patriotGameProcessNames = ["Tanks-Win64-Shipping", "game"];
+
+function isPatriotGameRoot(dir) {
+  return path.resolve(String(dir || "")).toLowerCase() === path.resolve(patriotGameRoot).toLowerCase();
+}
+
+/** Prefer game.exe at C:\\PatriotGame root (bootstrap → Tanks-Win64-Shipping). */
+function resolvePatriotLauncherExe(localFolder) {
+  const root = path.resolve(localFolder);
+  if (!isPatriotGameRoot(root)) return null;
+  for (const name of ["game.exe", "Game.exe", "GAME.EXE"]) {
+    const candidate = path.join(root, name);
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return findLocalGameExe(root, defaultGameLauncherExe);
+}
 // Central CMS base used for proxying media to the kiosk UI.
 const cmsBaseUrl = String(fileCfg.serverUrl || "").trim().replace(/\/$/, "");
 const forceUpdatePath = path.join(
@@ -484,15 +493,29 @@ function resolveConfiguredGameUnc() {
   );
 }
 
-function resolveGameInstallPaths(folder, exe) {
-  const configuredUnc = resolveConfiguredGameUnc();
-  const resolved = resolveGameUncFolder(configuredUnc, folder);
-  const uncFolder = resolved.full;
-  const localName = resolved.localName || resolved.folder || "game";
-  if (!uncFolder || !resolved.folder) return null;
-  const localFolder = path.join(gamesRoot, localName);
-  const exeRel = normalizeGameExeRel(exe, uncFolder, resolved.folder, localName);
-  return { uncFolder, localName, localFolder, folderNorm: resolved.folder, exeRel };
+/** Pre-installed Patriot game on kiosk — no UNC copy. */
+function checkPatriotGameReady() {
+  const localFolder = patriotGameRoot;
+  if (!fs.existsSync(localFolder)) {
+    return { ok: false, message: `Нет папки ${patriotGameRoot}` };
+  }
+  const exe = resolvePatriotLauncherExe(localFolder);
+  if (!exe) {
+    return {
+      ok: false,
+      message: `Нет ${defaultGameLauncherExe} в ${patriotGameRoot}`,
+    };
+  }
+  if (!gameContentLooksOk(localFolder)) {
+    return { ok: false, message: "Неполная установка: нет Tanks\\Content" };
+  }
+  const bytes = folderBytes(localFolder);
+  return {
+    ok: true,
+    exe,
+    bytes,
+    message: `Игра на киоске · ${formatBytes(bytes)}`,
+  };
 }
 
 /** Robocopy UNC → local as interactive console user. Returns robocopy-ish code 0–16 or -1. */
@@ -919,7 +942,7 @@ const healthServer = http.createServer(async (req, res) => {
   }
 
 // Spliced into healthServer callback — replaces old /launch-game block.
-  // Admin install: robocopy only (no exe launch)
+  // Verify pre-installed game at C:\PatriotGame (no UNC copy).
   if (req.method === "POST" && url.pathname === "/install-game") {
     let raw = "";
     req.on("data", (chunk) => {
@@ -932,246 +955,48 @@ const healthServer = http.createServer(async (req, res) => {
         return;
       }
 
-      let body;
-      try {
-        body = JSON.parse(raw || "{}");
-      } catch {
-        sendJson(res, 400, { ok: false, error: "Некорректный JSON" });
-        return;
-      }
-
-      const folder = String(body.folder || "").trim();
-      const exe = String(body.exe || "").trim();
-      if (!folder) {
-        sendJson(res, 400, { ok: false, error: "Не указана папка игры" });
-        return;
-      }
-
-      const paths = resolveGameInstallPaths(folder, exe);
-      if (!paths) {
-        sendJson(res, 400, { ok: false, error: "Не удалось собрать путь к папке игры" });
-        return;
-      }
-      const { uncFolder, localName, localFolder, exeRel } = paths;
-
-      fs.mkdirSync(omskekranRoot, { recursive: true });
-      fs.mkdirSync(gamesRoot, { recursive: true });
-      fs.mkdirSync(localFolder, { recursive: true });
-
-      if (updateInProgress || isStopRequested()) {
-        sendJson(res, 423, { ok: false, error: "Киоск занят, попробуйте позже" });
-        return;
-      }
-
-      gameLaunchInProgress = true;
-      sendJson(res, 202, { ok: true, accepted: true });
-      void (async () => {
-        try {
-          let copiedFinal = folderBytes(localFolder);
-          let robocode = 0;
-          let okCopy = true;
-          let totalBytes = null;
-
-          const hadLocal = Boolean(
-            (exeRel && findLocalGameExe(localFolder, exeRel)) ||
-              (fs.existsSync(localFolder) && fs.readdirSync(localFolder).length > 0)
-          );
-          patchGameCopy({
-            status: "copying",
-            folder: localName,
-            percent: null,
-            copiedBytes: copiedFinal || null,
-            totalBytes: null,
-            message: hadLocal
-              ? `Синхронизация с ${uncFolder}`
-              : `Копирование с ${uncFolder}`,
-          });
-
-          const measureP = measureUncBytesAsUser(uncFolder).then((n) => {
-            if (n) totalBytes = n;
-            return n;
-          });
-
-          const progressIv = setInterval(() => {
-            try {
-              const copied = folderBytes(localFolder);
-              let percent = null;
-              if (totalBytes && totalBytes > 0) {
-                percent = Math.min(99, Math.floor((copied / totalBytes) * 100));
-              }
-              patchGameCopy({
-                status: "copying",
-                folder: localName,
-                copiedBytes: copied,
-                totalBytes,
-                percent,
-                message: totalBytes
-                  ? `Копирование · ${formatBytes(copied)} / ${formatBytes(totalBytes)}`
-                  : `Копирование · ${formatBytes(copied)}`,
-              });
-            } catch {
-              /* ignore */
-            }
-          }, 2000);
-
-          try {
-            robocode = await runRobocopyAsUser(uncFolder, localFolder);
-            const measured = await measureP;
-            if (measured) totalBytes = measured;
-          } finally {
-            clearInterval(progressIv);
-          }
-
-          okCopy = robocode >= 0 && robocode <= 7;
-          if (robocode === -1) {
-            okCopy = false;
-            patchGameCopy({
-              status: "error",
-              folder: localName,
-              message: "Копирование прервано до завершения",
-            });
-            gameLaunchInProgress = false;
-            return;
-          }
-          if (!okCopy) {
-            console.warn(`[stella-agent] robocopy code=${robocode} unc=${uncFolder}`);
-          }
-
-          copiedFinal = folderBytes(localFolder);
-          if (!okCopy) {
-            patchGameCopy({
-              status: "error",
-              folder: localName,
-              copiedBytes: copiedFinal,
-              totalBytes,
-              percent: null,
-              message: robocopyErrorMessage(robocode, uncFolder),
-            });
-            gameLaunchInProgress = false;
-            return;
-          }
-
-          if (!gameContentLooksOk(localFolder)) {
-            patchGameCopy({
-              status: "error",
-              folder: localName,
-              percent: null,
-              copiedBytes: copiedFinal,
-              totalBytes,
-              message: "Копия неполная: нет Tanks\\Content. Повторите установку или проверьте шару",
-            });
-            gameLaunchInProgress = false;
-            return;
-          }
-
-          if (exeRel) {
-            const localExePath = findLocalGameExe(localFolder, exeRel);
-            if (!localExePath || !isPathInside(localFolder, localExePath)) {
-              patchGameCopy({
-                status: "error",
-                folder: localName,
-                percent: null,
-                copiedBytes: copiedFinal,
-                totalBytes,
-                message: `Игра не найдена: нет «${exeRel}»`,
-              });
-              gameLaunchInProgress = false;
-              return;
-            }
-          }
-
-          patchGameCopy({
-            status: "idle",
-            folder: localName,
-            percent: 100,
-            copiedBytes: copiedFinal,
-            totalBytes: totalBytes || copiedFinal,
-            message: `Установлена на диске · ${formatBytes(copiedFinal)}`,
-          });
-          gameLaunchInProgress = false;
-        } catch (e) {
-          gameLaunchInProgress = false;
-          patchGameCopy({
-            status: "error",
-            folder: gameCopy.folder,
-            percent: null,
-            copiedBytes: gameCopy.copiedBytes,
-            totalBytes: null,
-            message: e instanceof Error ? e.message : String(e),
-          });
-        }
-      })().catch((e) => {
-        console.warn("[stella-agent] game install failed:", e instanceof Error ? e.message : e);
-      });
-    });
-    return;
-  }
-
-  // Admin uninstall: delete local game folder
-  if (req.method === "POST" && url.pathname === "/uninstall-game") {
-    let raw = "";
-    req.on("data", (chunk) => {
-      raw += chunk;
-      if (raw.length > 64_000) req.destroy();
-    });
-    req.on("end", () => {
-      if (updateInProgress || gameLaunchInProgress || isStopRequested()) {
-        sendJson(res, 423, { ok: false, error: "Киоск занят, попробуйте позже" });
-        return;
-      }
-
-      let body;
-      try {
-        body = JSON.parse(raw || "{}");
-      } catch {
-        sendJson(res, 400, { ok: false, error: "Некорректный JSON" });
-        return;
-      }
-
-      const folder = String(body.folder || "").trim();
-      if (!folder) {
-        sendJson(res, 400, { ok: false, error: "Не указана папка игры" });
-        return;
-      }
-
-      const paths = resolveGameInstallPaths(folder, "");
-      if (!paths) {
-        sendJson(res, 400, { ok: false, error: "Не удалось собрать путь к папке игры" });
-        return;
-      }
-      const { localName, localFolder } = paths;
-
-      if (!isPathInside(gamesRoot, localFolder) || localFolder === gamesRoot) {
-        sendJson(res, 400, { ok: false, error: "Некорректный путь к игре" });
-        return;
-      }
-
-      try {
-        if (fs.existsSync(localFolder)) {
-          fs.rmSync(localFolder, { recursive: true, force: true });
-        }
-      } catch (e) {
-        sendJson(res, 500, {
-          ok: false,
-          error: e instanceof Error ? e.message : String(e),
+      const status = checkPatriotGameReady();
+      if (!status.ok) {
+        patchGameCopy({
+          status: "error",
+          folder: "PatriotGame",
+          percent: null,
+          copiedBytes: null,
+          totalBytes: null,
+          message: status.message,
         });
+        sendJson(res, 404, { ok: false, error: status.message });
         return;
       }
 
       patchGameCopy({
         status: "idle",
-        folder: null,
-        percent: null,
-        copiedBytes: null,
-        totalBytes: null,
-        message: `Удалена с диска: ${localName}`,
+        folder: "PatriotGame",
+        percent: 100,
+        copiedBytes: status.bytes,
+        totalBytes: status.bytes,
+        message: status.message,
       });
-      sendJson(res, 200, { ok: true, folder: localName });
+      sendJson(res, 200, {
+        ok: true,
+        folder: "PatriotGame",
+        exe: path.basename(status.exe),
+        bytes: status.bytes,
+      });
     });
     return;
   }
 
-  // Launch local .exe only (no robocopy) — install via admin /install-game first
+  // Pre-installed game — Stella does not remove C:\PatriotGame.
+  if (req.method === "POST" && url.pathname === "/uninstall-game") {
+    sendJson(res, 400, {
+      ok: false,
+      error: `Игра предустановлена в ${patriotGameRoot} — удаление через Stella недоступно`,
+    });
+    return;
+  }
+
+  // Launch C:\PatriotGame\game.exe + window.txt=1 (game pre-installed on kiosk).
   if (req.method === "POST" && url.pathname === "/launch-game") {
     let raw = "";
     req.on("data", (chunk) => {
@@ -1184,59 +1009,21 @@ const healthServer = http.createServer(async (req, res) => {
         return;
       }
 
-      let body;
-      try {
-        body = JSON.parse(raw || "{}");
-      } catch {
-        sendJson(res, 400, { ok: false, error: "Некорректный JSON" });
+      const localName = "PatriotGame";
+      const localFolder = patriotGameRoot;
+      const ready = checkPatriotGameReady();
+      if (!ready.ok) {
+        sendJson(res, 404, { ok: false, error: ready.message });
         return;
       }
-
-      const folder = String(body.folder || "").trim();
-      const exe = String(body.exe || "").trim();
-      if (!folder || !exe) {
-        sendJson(res, 400, { ok: false, error: "Не указаны папка и файл игры" });
-        return;
-      }
-
-      const paths = resolveGameInstallPaths(folder, exe);
-      if (!paths) {
-        sendJson(res, 400, { ok: false, error: "Не удалось собрать путь к папке игры" });
-        return;
-      }
-      const { localName, localFolder, exeRel } = paths;
-
-      if (!fs.existsSync(localFolder)) {
-        sendJson(res, 404, {
-          ok: false,
-          error: "Игра не установлена на киоске. Сначала установите через админку",
-        });
-        return;
-      }
-
-      const localExePath = findLocalGameExe(localFolder, exeRel);
-      if (!localExePath || !isPathInside(localFolder, localExePath)) {
-        sendJson(res, 404, {
-          ok: false,
-          error: `Игра не найдена: нет «${exeRel}». Сначала установите через админку`,
-        });
-        return;
-      }
-
-      if (!gameContentLooksOk(localFolder)) {
-        sendJson(res, 409, {
-          ok: false,
-          error: "Копия неполная: нет Tanks\\Content. Установите игру заново в админке",
-        });
-        return;
-      }
+      const localExePath = ready.exe;
 
       if (updateInProgress || isStopRequested()) {
         sendJson(res, 423, { ok: false, error: "Киоск занят, попробуйте позже" });
         return;
       }
 
-      const copiedFinal = folderBytes(localFolder);
+      const copiedFinal = ready.bytes ?? folderBytes(localFolder);
       gameLaunchInProgress = true;
       sendJson(res, 202, { ok: true, accepted: true });
       void (async () => {
@@ -1254,16 +1041,17 @@ const healthServer = http.createServer(async (req, res) => {
 
           const cached = readCachedConsoleUser() || "";
           const exeEsc = String(localExePath).replace(/'/g, "''");
-          const cwdEsc = String(path.dirname(localExePath)).replace(/'/g, "''");
+          const gameRootEsc = String(patriotGameRoot).replace(/'/g, "''");
           const cachedEsc = String(cached).replace(/'/g, "''");
-          const exeName = path.basename(localExePath, path.extname(localExePath));
+          const processNamesPs = patriotGameProcessNames.map((n) => `'${n.replace(/'/g, "''")}'`).join(", ");
           const helperPath = path.join(omskekranRoot, "_launch_game_once.ps1");
           const helperBody =
             "$ErrorActionPreference = 'SilentlyContinue'\n" +
             `$exe = '${exeEsc}'\n` +
-            `$cwd = '${cwdEsc}'\n` +
-            `$exeName = '${String(exeName).replace(/'/g, "''")}'\n` +
-            "Start-Process -FilePath $exe -WorkingDirectory $cwd | Out-Null\n" +
+            `$gameRoot = '${gameRootEsc}'\n` +
+            `$windowFile = Join-Path $gameRoot 'window.txt'\n` +
+            "Set-Content -LiteralPath $windowFile -Value '1' -Encoding ASCII -NoNewline\n" +
+            "Start-Process -FilePath $exe -WorkingDirectory $gameRoot | Out-Null\n" +
             "Add-Type @\"\n" +
             "using System;\n" +
             "using System.Runtime.InteropServices;\n" +
@@ -1276,14 +1064,16 @@ const healthServer = http.createServer(async (req, res) => {
             "}\n" +
             "\"@\n" +
             "function Raise-GameWindow {\n" +
-            "  foreach ($gp in Get-Process -Name $exeName -ErrorAction SilentlyContinue) {\n" +
-            "    $h = $gp.MainWindowHandle\n" +
-            "    if ($h -eq [IntPtr]::Zero) { continue }\n" +
-            "    [void][StellaGameTop]::ShowWindow($h, 9)\n" +
-            "    [void][StellaGameTop]::SetWindowPos($h, [StellaGameTop]::HWND_TOPMOST, 0, 0, 0, 0, 0x0003)\n" +
-            "    [void][StellaGameTop]::BringWindowToTop($h)\n" +
-            "    [void][StellaGameTop]::SetForegroundWindow($h)\n" +
-            "    return $true\n" +
+            "  foreach ($n in @('Tanks-Win64-Shipping','game')) {\n" +
+            "    foreach ($gp in Get-Process -Name $n -ErrorAction SilentlyContinue) {\n" +
+            "      $h = $gp.MainWindowHandle\n" +
+            "      if ($h -eq [IntPtr]::Zero) { continue }\n" +
+            "      [void][StellaGameTop]::ShowWindow($h, 9)\n" +
+            "      [void][StellaGameTop]::SetWindowPos($h, [StellaGameTop]::HWND_TOPMOST, 0, 0, 0, 0, 0x0003)\n" +
+            "      [void][StellaGameTop]::BringWindowToTop($h)\n" +
+            "      [void][StellaGameTop]::SetForegroundWindow($h)\n" +
+            "      return $true\n" +
+            "    }\n" +
             "  }\n" +
             "  return $false\n" +
             "}\n" +
@@ -1297,8 +1087,8 @@ const healthServer = http.createServer(async (req, res) => {
 
           const taskName = `StellaKioskGameOnce`;
           const helperEsc = String(helperPath).replace(/'/g, "''");
-          const exeNameEsc = String(exeName).replace(/'/g, "''");
-          // Launch helper as interactive user (raise window in their session), wait for game process.
+          const gameRootEsc2 = String(patriotGameRoot).replace(/'/g, "''");
+          // Launch helper as interactive user (window.txt + game.exe), wait for UE shipping process.
           const script =
             "$ErrorActionPreference = 'Stop'\n" +
             "function Resolve-User {\n" +
@@ -1328,6 +1118,12 @@ const healthServer = http.createServer(async (req, res) => {
             "  if ($cached) { return $cached }\n" +
             "  return $null\n" +
             "}\n" +
+            "function Test-PatriotGameRunning {\n" +
+            `  foreach ($n in @(${processNamesPs})) {\n` +
+            "    if (Get-Process -Name $n -ErrorAction SilentlyContinue) { return $true }\n" +
+            "  }\n" +
+            "  return $false\n" +
+            "}\n" +
             "$user = Resolve-User\n" +
             "if (-not $user) { exit 2 }\n" +
             "$helper = '" +
@@ -1336,30 +1132,33 @@ const healthServer = http.createServer(async (req, res) => {
             "$task = '" +
             taskName +
             "'\n" +
-            "$exeName = '" +
-            exeNameEsc +
+            "$gameRoot = '" +
+            gameRootEsc2 +
             "'\n" +
+            "$windowFile = Join-Path $gameRoot 'window.txt'\n" +
             "try { Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue | Out-Null } catch {}\n" +
             "$arg = '-NoLogo -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"' + $helper + '\"'\n" +
             "$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $arg\n" +
-            "$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances Parallel -ExecutionTimeLimit (New-TimeSpan -Minutes 5) -Hidden\n" +
+            "$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances Parallel -ExecutionTimeLimit (New-TimeSpan -Minutes 120) -Hidden\n" +
             "$principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited\n" +
             "Register-ScheduledTask -TaskName $task -Action $action -Settings $settings -Principal $principal -Force | Out-Null\n" +
             "Start-ScheduledTask -TaskName $task -ErrorAction Stop | Out-Null\n" +
             "$started = $false\n" +
             "for ($i=0; $i -lt 90; $i++) {\n" +
-            "  if (Get-Process -Name $exeName -ErrorAction SilentlyContinue) { $started = $true; break }\n" +
+            "  if (Test-PatriotGameRunning) { $started = $true; break }\n" +
             "  Start-Sleep -Milliseconds 500\n" +
             "}\n" +
             "if (-not $started) {\n" +
             "  $info = Get-ScheduledTaskInfo -TaskName $task -ErrorAction SilentlyContinue\n" +
             "  $code = if ($info) { [int]$info.LastTaskResult } else { -1 }\n" +
             "  try { Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue | Out-Null } catch {}\n" +
+            "  Set-Content -LiteralPath $windowFile -Value '0' -Encoding ASCII -NoNewline\n" +
             "  Write-Output (\"fail:\" + $code)\n" +
             "  exit 4\n" +
             "}\n" +
             "Write-Output 'running'\n" +
-            "while (Get-Process -Name $exeName -ErrorAction SilentlyContinue) { Start-Sleep -Seconds 1 }\n" +
+            "while (Test-PatriotGameRunning) { Start-Sleep -Seconds 1 }\n" +
+            "Set-Content -LiteralPath $windowFile -Value '0' -Encoding ASCII -NoNewline\n" +
             "try { Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue | Out-Null } catch {}\n" +
             "Write-Output 'ok'\n";
 

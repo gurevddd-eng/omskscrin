@@ -641,7 +641,7 @@ export function useKiosksPage() {
         { method: "POST", json: {} }
       );
       if (res.kiosk) patchKiosk(res.kiosk);
-      setOkHint(res.message || "Установка игры запущена");
+      setOkHint(res.message || "Проверка игры завершена");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Не удалось установить игру");
     } finally {

@@ -22,24 +22,11 @@ async function loadKioskWithExhibit(id: string) {
   });
 }
 
-function resolveGameSpec(
-  body: GameBody,
-  exhibit: {
-    gameShareFolder: string;
-    gameExe: string;
-    gameTitle: string;
-  } | null
-) {
-  const folder = String(body.folder || exhibit?.gameShareFolder || "").trim();
-  const exe = String(body.exe || exhibit?.gameExe || "").trim();
-  return { folder, exe, title: String(exhibit?.gameTitle || "").trim() || folder };
-}
-
 async function postAgentGame(
   hostname: string,
   healthPort: number,
   pathName: "/install-game" | "/uninstall-game",
-  body: { folder: string; exe?: string }
+  body: Record<string, unknown> = {}
 ): Promise<{ ok: boolean; status: number; message: string; json?: Record<string, unknown> }> {
   const port = Number(healthPort) || 47821;
   const url = `http://${hostname}:${port}${pathName}`;
@@ -85,34 +72,12 @@ async function postAgentGame(
   }
 }
 
-export async function requestKioskGameInstall(id: string, body: GameBody = {}) {
+export async function requestKioskGameInstall(id: string, _body: GameBody = {}) {
   const kiosk = await loadKioskWithExhibit(id);
   if (!kiosk) {
     return { ok: false as const, status: 404, message: "Киоск не найден", kiosk: null };
   }
-  const { folder, exe, title } = resolveGameSpec(body, kiosk.exhibit);
-  if (!folder) {
-    return {
-      ok: false as const,
-      status: 400,
-      message: "Не задана папка игры — укажите в экспонате (gameShareFolder) или в запросе",
-      kiosk: enrichKioskDto(mapKiosk(kiosk)),
-    };
-  }
-  if (!exe) {
-    return {
-      ok: false as const,
-      status: 400,
-      message: "Не задан exe игры — укажите в экспонате (gameExe) или в запросе",
-      kiosk: enrichKioskDto(mapKiosk(kiosk)),
-    };
-  }
-
-  const agent = await postAgentGame(kiosk.hostname, kiosk.healthPort, "/install-game", {
-    folder,
-    exe,
-  });
-  if (!agent.ok) {
+  const agent = await postAgentGame(kiosk.hostname, kiosk.healthPort, "/install-game", {});
     return {
       ok: false as const,
       status: agent.status >= 400 ? agent.status : 400,
@@ -121,60 +86,14 @@ export async function requestKioskGameInstall(id: string, body: GameBody = {}) {
     };
   }
 
-  setGameCopyState(kiosk.kioskId, kiosk.hostname, {
-    status: "copying",
-    folder,
-    percent: null,
-    copiedBytes: null,
-    totalBytes: null,
-    message: `Установка «${title || folder}»…`,
-    updatedAt: new Date().toISOString(),
-  });
-  const dto = enrichKioskDto(mapKiosk(kiosk));
-  broadcastKioskUpsert(dto);
-  void probeKioskById(id).catch(() => null);
-  return {
-    ok: true as const,
-    status: 202,
-    message: `Установка игры «${title || folder}» запущена`,
-    kiosk: dto,
-  };
-}
-
-export async function requestKioskGameUninstall(id: string, body: GameBody = {}) {
-  const kiosk = await loadKioskWithExhibit(id);
-  if (!kiosk) {
-    return { ok: false as const, status: 404, message: "Киоск не найден", kiosk: null };
-  }
-  const { folder, title } = resolveGameSpec(body, kiosk.exhibit);
-  if (!folder) {
-    return {
-      ok: false as const,
-      status: 400,
-      message: "Не задана папка игры для удаления",
-      kiosk: enrichKioskDto(mapKiosk(kiosk)),
-    };
-  }
-
-  const agent = await postAgentGame(kiosk.hostname, kiosk.healthPort, "/uninstall-game", {
-    folder,
-  });
-  if (!agent.ok) {
-    return {
-      ok: false as const,
-      status: agent.status >= 400 ? agent.status : 400,
-      message: agent.message,
-      kiosk: enrichKioskDto(mapKiosk(kiosk)),
-    };
-  }
-
+  const agentMsg = String(agent.json?.message || agent.json?.error || "");
   setGameCopyState(kiosk.kioskId, kiosk.hostname, {
     status: "idle",
-    folder: null,
-    percent: null,
+    folder: "PatriotGame",
+    percent: 100,
     copiedBytes: null,
     totalBytes: null,
-    message: `Удалена · ${title || folder}`,
+    message: agentMsg || `Игра в C:\\PatriotGame`,
     updatedAt: new Date().toISOString(),
   });
   const dto = enrichKioskDto(mapKiosk(kiosk));
@@ -183,7 +102,21 @@ export async function requestKioskGameUninstall(id: string, body: GameBody = {})
   return {
     ok: true as const,
     status: 200,
-    message: `Игра «${title || folder}» удалена с диска киоска`,
+    message: agentMsg || `Игра найдена в C:\\PatriotGame`,
     kiosk: dto,
+  };
+}
+
+export async function requestKioskGameUninstall(id: string, _body: GameBody = {}) {
+  const kiosk = await loadKioskWithExhibit(id);
+  if (!kiosk) {
+    return { ok: false as const, status: 404, message: "Киоск не найден", kiosk: null };
+  }
+
+  return {
+    ok: false as const,
+    status: 400,
+    message: "Игра предустановлена в C:\\PatriotGame — удаление через Stella недоступно",
+    kiosk: enrichKioskDto(mapKiosk(kiosk)),
   };
 }
